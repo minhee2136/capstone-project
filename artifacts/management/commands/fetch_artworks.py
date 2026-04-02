@@ -1,8 +1,14 @@
+import re
 import requests
 from django.core.management.base import BaseCommand
 from artifacts.models import Artifact
 
 CMA_API_URL = "https://openaccess-api.clevelandart.org/api/artworks/"
+
+def clean_html(text):
+    if not text:
+        return ""
+    return re.sub(r'<[^>]+>', '', text).strip()
 
 class Command(BaseCommand):
     help = "Cleveland Museum API에서 유물 데이터를 가져와 DB에 저장"
@@ -52,50 +58,48 @@ class Command(BaseCommand):
             updated_count = 0
 
             for aw in artworks:
-                # 이미지 URL 추출
                 images = aw.get("images", {})
                 image_url = ""
-                image_url_full = ""
                 if images:
                     web = images.get("web", {})
-                    full = images.get("full", {})
                     image_url = web.get("url", "") if web else ""
-                    image_url_full = full.get("url", "") if full else ""
 
-                # 임베딩용 텍스트 조합
                 embedding_text = " ".join(filter(None, [
                     aw.get("title", ""),
+                    aw.get("type", ""),
                     aw.get("technique", ""),
                     aw.get("department", ""),
                     aw.get("collection", ""),
-                    aw.get("type", ""),
-                    aw.get("description", "") or "",
-                    aw.get("did_you_know", "") or "",
+                    aw.get("creation_date", ""),
+                    str(aw.get("creation_date_earliest", "") or ""),
+                    str(aw.get("creation_date_latest", "") or ""),
+                    aw.get("current_location", "") or "",
+                    clean_html(aw.get("description", "")),
+                    clean_html(aw.get("did_you_know", "")),
                     ", ".join(aw.get("culture", [])),
+                    ", ".join(aw.get("artists_tags", [])),
                 ]))
 
                 obj, created = Artifact.objects.update_or_create(
                     cleveland_id=aw["id"],
                     defaults={
-                        "accession_number": aw.get("accession_number", ""),
                         "title": aw.get("title", ""),
-                        "tombstone": aw.get("tombstone", ""),
+                        "type": aw.get("type", ""),
+                        "department": aw.get("department", ""),
+                        "collection": aw.get("collection", ""),
+                        "technique": aw.get("technique", ""),
+                        "culture": aw.get("culture", []),
                         "creation_date": aw.get("creation_date", ""),
                         "creation_date_earliest": aw.get("creation_date_earliest"),
                         "creation_date_latest": aw.get("creation_date_latest"),
-                        "department": aw.get("department", ""),
-                        "collection": aw.get("collection", ""),
-                        "type": aw.get("type", ""),
-                        "technique": aw.get("technique", ""),
-                        "culture": aw.get("culture", []),
                         "current_location": aw.get("current_location", "") or "",
                         "image_url": image_url,
-                        "image_url_full": image_url_full,
-                        "description": aw.get("description", "") or "",
-                        "did_you_know": aw.get("did_you_know", "") or "",
-                        "measurements": aw.get("measurements", "") or "",
-                        "share_license_status": aw.get("share_license_status", ""),
+                        "description": clean_html(aw.get("description", "")),
+                        "did_you_know": clean_html(aw.get("did_you_know", "")),
+                        "artists_tags": aw.get("artists_tags", []),
+                        "series": aw.get("series", "") or "",
                         "embedding_text": embedding_text,
+                        "embedding_vector": None,
                     }
                 )
                 if created:
