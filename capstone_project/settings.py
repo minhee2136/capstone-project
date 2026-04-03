@@ -23,9 +23,9 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'artifacts',
-    'users',
     'chat',
     'recommendations',
+    'drf_yasg',
 ]
 
 MIDDLEWARE = [
