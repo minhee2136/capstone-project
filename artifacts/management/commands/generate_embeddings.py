@@ -8,19 +8,21 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
         
-        artifacts = Artifact.objects.filter(embedding_vector__isnull=True)
-        total = artifacts.count()
+        BATCH_SIZE = 64
+
+        artifacts = list(Artifact.objects.filter(embedding_vector__isnull=True).exclude(embedding_text=""))
+        total = len(artifacts)
         self.stdout.write(f"임베딩 생성 대상: {total}개")
 
-        for i, artifact in enumerate(artifacts):
-            if not artifact.embedding_text:
-                continue
-            
-            vector = model.encode(artifact.embedding_text).tolist()
-            artifact.embedding_vector = vector
-            artifact.save(update_fields=["embedding_vector"])
+        for i in range(0, total, BATCH_SIZE):
+            batch = artifacts[i:i + BATCH_SIZE]
+            texts = [a.embedding_text for a in batch]
+            vectors = model.encode(texts, batch_size=BATCH_SIZE, show_progress_bar=False)
 
-            if (i + 1) % 100 == 0:
-                self.stdout.write(f"진행중... {i+1}/{total}")
+            for artifact, vector in zip(batch, vectors):
+                artifact.embedding_vector = vector.tolist()
+            Artifact.objects.bulk_update(batch, ["embedding_vector"])
+
+            self.stdout.write(f"진행중... {min(i + BATCH_SIZE, total)}/{total}")
 
         self.stdout.write(self.style.SUCCESS(f"완료! {total}개 임베딩 생성"))

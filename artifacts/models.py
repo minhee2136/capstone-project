@@ -1,4 +1,5 @@
 from django.db import models
+import numpy as np
 
 class Artifact(models.Model):
     cleveland_id = models.IntegerField(unique=True)
@@ -19,7 +20,12 @@ class Artifact(models.Model):
     embedding_vector = models.JSONField(null=True, blank=True)
 
     def __str__(self):
-        return f"{self.title} ({self.creation_date})"
+        return f"{self.title} ({self.creation_date_earliest})"
+
+    def get_embedding_vector(self):
+        if self.embedding_vector is None:
+            return None
+        return np.array(self.embedding_vector, dtype=np.float32)
 
     class Meta:
         ordering = ['cleveland_id']
