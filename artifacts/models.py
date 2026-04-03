@@ -8,16 +8,12 @@ class Artifact(models.Model):
     collection = models.CharField(max_length=200, blank=True)
     technique = models.CharField(max_length=200, blank=True)
     culture = models.JSONField(default=list, blank=True)
-    creation_date = models.CharField(max_length=100, blank=True)
     creation_date_earliest = models.IntegerField(null=True, blank=True)
     creation_date_latest = models.IntegerField(null=True, blank=True)
     current_location = models.CharField(max_length=200, blank=True)
     image_url = models.URLField(max_length=500, blank=True)
     description = models.TextField(blank=True)
     did_you_know = models.TextField(blank=True)
-    # 추가
-    artists_tags = models.JSONField(default=list, blank=True)
-    series = models.CharField(max_length=500, blank=True)
     # 임베딩
     embedding_text = models.TextField(blank=True)
     embedding_vector = models.JSONField(null=True, blank=True)
