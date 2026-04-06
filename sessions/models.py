@@ -34,6 +34,7 @@ class Session(models.Model):
         blank=True,
         verbose_name='관람 희망 시간(분)',
     )
+    history_embedding = models.JSONField(null=True, blank=True, verbose_name='히스토리 임베딩 벡터')
     is_active = models.BooleanField(default=True, verbose_name='활성 여부')
     created_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)

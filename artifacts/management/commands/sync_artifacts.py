@@ -139,7 +139,7 @@ class Command(BaseCommand):
                 self.stdout.write("임베딩 생성 대상 없음.")
             return
 
-        # ③ 임베딩 생성
+        # 임베딩 생성
         self.stdout.write(f"\n=== 임베딩 생성 시작: {len(embedding_targets)}개 ===")
         try:
             from sentence_transformers import SentenceTransformer

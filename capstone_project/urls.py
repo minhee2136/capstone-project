@@ -12,6 +12,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('swagger/', schema_view.with_ui('swagger'), name='swagger'),
     path('api/', include('users.urls')),
+    path('api/', include('sessions.urls')),
     path('api/', include('chat.urls')),
     path('api/', include('artifacts.urls')),
     path('api/', include('history.urls')),

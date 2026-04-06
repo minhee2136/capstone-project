@@ -12,6 +12,7 @@ class Command(BaseCommand):
         artifacts = Artifact.objects.filter(embedding_vector__isnull=True)
         total = artifacts.count()
         self.stdout.write(f"임베딩 생성 대상: {total}개")
+        
 
         for i, artifact in enumerate(artifacts):
             if not artifact.embedding_text:
