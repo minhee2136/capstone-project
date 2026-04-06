@@ -13,7 +13,7 @@ class UserView(APIView):
     @swagger_auto_schema(
         operation_description="POST /api/users/ — 사용자 생성",
         request_body=UserCreateSerializer,
-        responses={201: UserCreateSerializer},
+        responses={201: "사용자 생성 성공"},
     )
     def post(self, request):
         serializer = UserCreateSerializer(data=request.data)

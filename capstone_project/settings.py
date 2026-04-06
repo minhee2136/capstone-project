@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     'recommendations',
     'drf_yasg',
     'users',
+    'sessions.apps.SessionsConfig'
 ]
 
 MIDDLEWARE = [
