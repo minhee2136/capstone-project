@@ -108,6 +108,9 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
+
 REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
