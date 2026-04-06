@@ -2,11 +2,6 @@ from rest_framework import serializers
 from .models import User
 
 
-class InterestEmbeddingSerializer(serializers.Serializer):
-    interest_tags = serializers.ListField(child=serializers.CharField())
-    knowledge_level = serializers.ChoiceField(choices=User.KnowledgeLevel.choices)
-
-
 class UserCreateSerializer(serializers.ModelSerializer):
     """POST /api/users/ — 사용자 생성"""
 
@@ -16,9 +11,29 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         return {
-            'code': 201,
             'user_id': instance.id,
             'nickname': instance.nickname,
             'gender': instance.gender,
-            'birthyear': instance.birth_year,
+            'birth_year': instance.birth_year,
+        }
+
+
+class UserDetailSerializer(serializers.ModelSerializer):
+    """GET/PUT /api/users/{user_id} — 프로필 조회/수정"""
+
+    class Meta:
+        model = User
+        fields = ['id', 'nickname', 'gender', 'birth_year']
+        extra_kwargs = {
+            'nickname': {'required': False},
+            'gender': {'required': False},
+            'birth_year': {'required': False},
+        }
+
+    def to_representation(self, instance):
+        return {
+            'user_id': instance.id,
+            'nickname': instance.nickname,
+            'gender': instance.gender,
+            'birth_year': instance.birth_year,
         }

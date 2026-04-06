@@ -40,11 +40,8 @@ class Message(models.Model):
 class Feedback(models.Model):
 
     class FeedbackType(models.TextChoices):
-        LIKE = 'like', '흥미로워요'
-        DISLIKE = 'dislike', '별로예요'
-        WHY = 'why', '왜 이거예요?'
-        SIMILAR = 'similar', '비슷한 작품'
-        SHORT_ROUTE = 'short_route', '짧은 경로'
+        LIKE = 'like', '좋아요'
+        DISLIKE = 'dislike', '싫어요'
 
     session = models.ForeignKey(
         Session,
