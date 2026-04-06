@@ -18,6 +18,12 @@ class Artifact(models.Model):
     did_you_know = models.TextField(blank=True)
     embedding_text = models.TextField(blank=True)
     embedding_vector = models.JSONField(null=True, blank=True)
+    accession_number = models.CharField(max_length=50, blank=True)
+    tombstone = models.TextField(blank=True)
+    creation_date = models.CharField(max_length=100, blank=True)
+    measurements = models.TextField(blank=True)
+    share_license_status = models.CharField(max_length=20, default='CC0')
+    is_active = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.title} ({self.creation_date_earliest})"
