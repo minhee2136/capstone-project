@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     'drf_yasg',
     'users',
     'sessions.apps.SessionsConfig'
+    'artifacts.apps.ArtifactsConfig'
 ]
 
 MIDDLEWARE = [

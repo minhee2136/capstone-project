@@ -13,4 +13,5 @@ urlpatterns = [
     path('swagger/', schema_view.with_ui('swagger'), name='swagger'),
     path('api/', include('users.urls')),
     path('api/', include('chat.urls')),
+    path('api/', include('artifacts.urls')),
 ]
