@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     'chat',
     'recommendations',
     'drf_yasg',
+    'users',
 ]
 
 MIDDLEWARE = [
