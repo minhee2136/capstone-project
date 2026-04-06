@@ -14,4 +14,5 @@ urlpatterns = [
     path('api/', include('users.urls')),
     path('api/', include('chat.urls')),
     path('api/', include('artifacts.urls')),
+    path('api/', include('history.urls')),
 ]
