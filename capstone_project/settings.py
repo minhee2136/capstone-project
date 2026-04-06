@@ -118,3 +118,16 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.AllowAny',
     ]
 }
+
+# Celery
+from celery.schedules import crontab
+
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+CELERY_TIMEZONE = 'Asia/Seoul'
+CELERY_BEAT_SCHEDULE = {
+    'sync-artifacts-daily': {
+        'task': 'artifacts.tasks.sync_artifacts_task',
+        'schedule': crontab(hour=6, minute=0),
+    },
+}
