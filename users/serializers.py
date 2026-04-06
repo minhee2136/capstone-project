@@ -2,6 +2,11 @@ from rest_framework import serializers
 from .models import User
 
 
+class InterestEmbeddingSerializer(serializers.Serializer):
+    interest_tags = serializers.ListField(child=serializers.CharField())
+    knowledge_level = serializers.ChoiceField(choices=User.KnowledgeLevel.choices)
+
+
 class UserCreateSerializer(serializers.ModelSerializer):
     """POST /api/users/ — 사용자 생성"""
 
