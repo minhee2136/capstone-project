@@ -8,6 +8,7 @@ from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 from openai import OpenAI
 from django.conf import settings
+from sentence_transformers import SentenceTransformer
 
 from .models import Session
 from .serializers import SessionCreateSerializer
@@ -16,6 +17,7 @@ from artifacts.models import Artifact
 from history.models import ViewHistory
 
 gpt_client = OpenAI(api_key=settings.OPENAI_API_KEY)
+embedding_model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
 
 def _get_session_or_404(session_id):
@@ -44,6 +46,18 @@ class SessionView(APIView):
         serializer = SessionCreateSerializer(data=request.data)
         if serializer.is_valid():
             session = serializer.save()
+
+            if session.user and session.interest_tags:
+                text = ', '.join(session.interest_tags)
+                embedding = embedding_model.encode(text).tolist()
+                user.interest_embedding = embedding
+                user.save(update_fields=['interest_embedding'])
+
+            return Response(
+                SessionCreateSerializer(session).data,
+                status=status.HTTP_201_CREATED,
+            )
+
             return Response(
                 SessionCreateSerializer(session).data,
                 status=status.HTTP_201_CREATED,
@@ -54,9 +68,20 @@ class SessionView(APIView):
 class SessionDetailView(APIView):
 
     @swagger_auto_schema(
-        operation_description="GET /api/sessions/{session_id}/ — 세션 조회",
+        operation_description="GET /api/sessions/{session_id}/ — 세션 조회 (context 포함)",
         responses={
-            200: SessionCreateSerializer,
+            200: openapi.Response('세션 조회 성공', schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'session_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'user_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'interest_tags': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Schema(type=openapi.TYPE_STRING)),
+                    'knowledge_level': openapi.Schema(type=openapi.TYPE_STRING),
+                    'view_time': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'artifact_count': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'context_summary': openapi.Schema(type=openapi.TYPE_STRING),
+                }
+            )),
             404: '세션 없음',
         }
     )
@@ -65,57 +90,30 @@ class SessionDetailView(APIView):
             session = Session.objects.get(id=session_id)
         except Session.DoesNotExist:
             return Response({'error': '세션을 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
-        return Response(SessionCreateSerializer(session).data)
 
+        data = SessionCreateSerializer(session).data
+        histories = _get_view_history(session_id)
+        data['artifact_count'] = len(histories)
 
+        if histories:
+            artifact_list = '\n'.join([
+                f"- {h.artifact.title} ({h.artifact.department} / {h.artifact.culture} / {h.artifact.technique})"
+                for h in histories
+            ])
+            prompt = f"다음은 사용자가 관람한 유물 목록이야:\n{artifact_list}\n\n이 관람 흐름에서 주요 테마와 관심사를 2-3문장으로 분석해줘. 한국어로 답해줘."
+            try:
+                resp = gpt_client.chat.completions.create(
+                    model=settings.GPT_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                data['context_summary'] = resp.choices[0].message.content
+            except Exception as e:
+                data['context_summary'] = ''
+        else:
+            data['context_summary'] = ''
 
-class SessionHistoryEmbeddingView(APIView):
+        return Response(data)
 
-    @swagger_auto_schema(
-        operation_description="POST /api/sessions/{session_id}/history-embedding — 관람완료 유물 기반 히스토리 임베딩 생성",
-        responses={
-            200: openapi.Response('임베딩 생성 결과', schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    'session_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'artifact_count': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'embedding_generated': openapi.Schema(type=openapi.TYPE_BOOLEAN),
-                }
-            )),
-            404: '세션 없음',
-        }
-    )
-    def post(self, request, session_id):
-        try:
-            session = Session.objects.get(id=session_id)
-        except Session.DoesNotExist:
-            return Response({'error': '세션을 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
-
-        viewed_artifact_ids = ViewHistory.objects.filter(
-            session_id=session_id,
-        ).values_list('artifact_id', flat=True)
-
-        if not viewed_artifact_ids:
-            return Response({'session_id': session_id, 'artifact_count': 0, 'embedding_generated': False})
-
-        artifacts = Artifact.objects.filter(
-            id__in=viewed_artifact_ids,
-            embedding_vector__isnull=False,
-        )
-
-        vectors = [a.embedding_vector for a in artifacts if a.embedding_vector]
-        if not vectors:
-            return Response({'session_id': session_id, 'artifact_count': 0, 'embedding_generated': False})
-
-        avg_vector = np.mean(np.array(vectors, dtype=np.float32), axis=0).tolist()
-        session.history_embedding = avg_vector
-        session.save(update_fields=['history_embedding'])
-
-        return Response({
-            'session_id': session_id,
-            'artifact_count': len(vectors),
-            'embedding_generated': True,
-        })
 
 
 class SessionCandidatesView(APIView):
@@ -259,51 +257,21 @@ class SessionLocationView(APIView):
         return Response({'session_id': session_id, 'current_location': session.current_location})
 
 
-class SessionContextView(APIView):
-
-    @swagger_auto_schema(
-        operation_description="GET /api/sessions/{session_id}/context/ — 관람 맥락 GPT 분석",
-        responses={200: '맥락 분석 성공', 404: '세션 없음'},
-    )
-    def get(self, request, session_id):
-        session, err = _get_session_or_404(session_id)
-        if err:
-            return err
-        histories = _get_view_history(session_id)
-        if not histories:
-            return Response({'session_id': session_id, 'artifact_count': 0, 'context_summary': ''})
-
-        artifact_list = '\n'.join([
-            f"- {h.artifact.title} ({h.artifact.department} / {h.artifact.culture} / {h.artifact.technique})"
-            for h in histories
-        ])
-        prompt = f"다음은 사용자가 관람한 유물 목록이야:\n{artifact_list}\n\n이 관람 흐름에서 주요 테마와 관심사를 2-3문장으로 분석해줘. 한국어로 답해줘."
-        try:
-            resp = gpt_client.chat.completions.create(
-                model=settings.GPT_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            summary = resp.choices[0].message.content
-        except Exception as e:
-            return Response({'error': f'GPT 호출 실패: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        return Response({'session_id': session_id, 'artifact_count': len(histories), 'context_summary': summary})
-
-
 class SessionSummaryView(APIView):
 
     @swagger_auto_schema(
-        operation_description="POST /api/sessions/{session_id}/summary/ — 전체 관람 요약 GPT 생성",
-        responses={200: '요약 생성 성공', 404: '세션 없음'},
+        operation_description="POST /api/sessions/{session_id}/summary/ — 전체 관람 요약 + 스토리텔링 스크립트 GPT 생성",
+        responses={200: '요약 및 스크립트 생성 성공', 404: '세션 없음'},
     )
     def post(self, request, session_id):
         session, err = _get_session_or_404(session_id)
         if err:
             return err
         histories = _get_view_history(session_id)
-        artifact_list = '\n'.join([f"- {h.artifact.title} ({h.artifact.culture} / {h.artifact.technique})" for h in histories])
-        prompt = (
-            f"사용자가 오늘 박물관에서 아래 유물들을 관람했어:\n{artifact_list}\n\n"
+
+        artifact_list_summary = '\n'.join([f"- {h.artifact.title} ({h.artifact.culture} / {h.artifact.technique})" for h in histories])
+        summary_prompt = (
+            f"사용자가 오늘 박물관에서 아래 유물들을 관람했어:\n{artifact_list_summary}\n\n"
             f"관람 시간: {session.view_time_minutes}분\n"
             f"관심 키워드: {session.interest_tags}\n"
             f"지식 수준: {session.knowledge_level}\n\n"
@@ -312,42 +280,34 @@ class SessionSummaryView(APIView):
         try:
             resp = gpt_client.chat.completions.create(
                 model=settings.GPT_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": summary_prompt}],
             )
             summary = resp.choices[0].message.content
         except Exception as e:
             return Response({'error': f'GPT 호출 실패: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        return Response({'session_id': session_id, 'artifact_count': len(histories), 'view_time_minutes': session.view_time_minutes, 'summary': summary})
-
-
-class SessionSummaryScriptView(APIView):
-
-    @swagger_auto_schema(
-        operation_description="POST /api/sessions/{session_id}/summary/script/ — 스토리텔링 스크립트 GPT 생성",
-        responses={200: '스크립트 생성 성공', 404: '세션 없음'},
-    )
-    def post(self, request, session_id):
-        session, err = _get_session_or_404(session_id)
-        if err:
-            return err
-        histories = _get_view_history(session_id)
-        artifact_list = '\n'.join([f"{i+1}. {h.artifact.title}" for i, h in enumerate(histories)])
-        prompt = (
-            f"사용자가 아래 순서로 유물을 관람했어:\n{artifact_list}\n\n"
+        artifact_list_script = '\n'.join([f"{i+1}. {h.artifact.title}" for i, h in enumerate(histories)])
+        script_prompt = (
+            f"사용자가 아래 순서로 유물을 관람했어:\n{artifact_list_script}\n\n"
             f"이 관람 여정을 마치 박물관 가이드가 설명하듯 스토리텔링 형식으로 작성해줘. "
             f"각 유물 간의 연결성을 자연스럽게 이어줘. 한국어로 답해줘."
         )
         try:
             resp = gpt_client.chat.completions.create(
                 model=settings.GPT_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": script_prompt}],
             )
             script = resp.choices[0].message.content
         except Exception as e:
             return Response({'error': f'GPT 호출 실패: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        return Response({'session_id': session_id, 'script': script})
+        return Response({
+            'session_id': session_id,
+            'artifact_count': len(histories),
+            'view_time_minutes': session.view_time_minutes,
+            'summary': summary,
+            'script': script,
+        })
 
 
 class SessionSummaryNextTopicsView(APIView):

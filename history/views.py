@@ -1,3 +1,4 @@
+import numpy as np
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -46,6 +47,20 @@ class ViewHistoryView(APIView):
             return Response({'error': '유물을 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
 
         record = ViewHistory.objects.create(session=session, artifact=artifact)
+
+        # 히스토리 저장 후 세션 임베딩 자동 갱신
+        viewed_artifact_ids = ViewHistory.objects.filter(
+            session_id=session_id,
+        ).values_list('artifact_id', flat=True)
+        artifacts_with_vec = Artifact.objects.filter(
+            id__in=viewed_artifact_ids,
+            embedding_vector__isnull=False,
+        )
+        vectors = [a.embedding_vector for a in artifacts_with_vec if a.embedding_vector]
+        if vectors:
+            avg_vector = np.mean(np.array(vectors, dtype=np.float32), axis=0).tolist()
+            session.history_embedding = avg_vector
+            session.save(update_fields=['history_embedding'])
 
         return Response({
             'id': record.id,

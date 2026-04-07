@@ -34,6 +34,12 @@ class Session(models.Model):
         blank=True,
         verbose_name='관람 희망 시간(분)',
     )
+    interest_embedding = ArrayField(
+        models.FloatField(),
+        null=True,
+        blank=True,
+        verbose_name='관심도 임베딩',
+    )
     history_embedding = models.JSONField(null=True, blank=True, verbose_name='히스토리 임베딩 벡터')
     current_location = models.CharField(max_length=100, blank=True, verbose_name='현재 위치(전시실)')
     is_active = models.BooleanField(default=True, verbose_name='활성 여부')
