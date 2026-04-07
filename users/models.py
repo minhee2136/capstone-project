@@ -21,6 +21,12 @@ class User(models.Model):
         blank=True,
         verbose_name='출생년도',
     )
+
+    interest_embedding = models.JSONField(
+    null=True,
+    blank=True,
+    verbose_name='관심사 임베딩 벡터',
+    )
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

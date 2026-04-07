@@ -50,13 +50,8 @@ class SessionView(APIView):
             if session.user and session.interest_tags:
                 text = ', '.join(session.interest_tags)
                 embedding = embedding_model.encode(text).tolist()
-                user.interest_embedding = embedding
-                user.save(update_fields=['interest_embedding'])
-
-            return Response(
-                SessionCreateSerializer(session).data,
-                status=status.HTTP_201_CREATED,
-            )
+                session.user.interest_embedding = embedding
+                session.user.save(update_fields=['interest_embedding'])
 
             return Response(
                 SessionCreateSerializer(session).data,
