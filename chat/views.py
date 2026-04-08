@@ -10,6 +10,7 @@ from drf_yasg import openapi
 from openai import OpenAI
 from django.conf import settings
 from sentence_transformers import SentenceTransformer
+from groq import Groq
 
 from sessions.models import Session
 from artifacts.models import Artifact
@@ -17,6 +18,20 @@ from .models import Chat, Message, Feedback
 from .serializers import MessageCreateSerializer, MessageSerializer, FeedbackCreateSerializer
 
 embedding_model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+groq_client = Groq(api_key=settings.GROQ_API_KEY)
+GROQ_MODEL = "llama3-8b-8192"
+
+
+def _groq_generate(prompt: str) -> str | None:
+    """Groq LLM 호출. 실패 시 None 반환."""
+    try:
+        resp = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception:
+        return None
 
 CONN_MESSAGES = {
     "story":    "이전 작품과 같은 흐름으로 이어지는 작품이에요.",
@@ -390,6 +405,27 @@ class ChatNextRecommendationView(generics.RetrieveAPIView):
                 scored.sort(key=lambda x: abs(_gallery_number(x[1].current_location) - session_gallery))
             chosen_score, chosen = scored[0]
 
+        # ── conn_message: Groq LLM 생성, 실패 시 템플릿 fallback ──────────
+        prev_artifact = None
+        if chat.history:
+            prev_artifacts = Artifact.objects.filter(id=list(chat.history)[-1])
+            prev_artifact = prev_artifacts.first()
+
+        if prev_artifact:
+            prompt = (
+                f"이전 유물: {prev_artifact.title}, {prev_artifact.type}, {prev_artifact.department}\n"
+                f"다음 유물: {chosen.title}, {chosen.type}, {chosen.department}\n"
+                f"연결 방식: {conn_type}\n\n"
+                f"위 두 유물의 연결을 한국어로 1~2문장으로 자연스럽게 설명해줘.\n"
+                f"유물명은 영어 그대로 써도 돼.\n"
+                f"conn_type이 story면 흐름이 이어짐, mystery면 의외의 연결, "
+                f"contrast면 대비, shock면 발길을 멈추게 하는 작품으로 설명해줘.\n"
+                f"반드시 한국어로만 출력해줘."
+            )
+            conn_message = _groq_generate(prompt) or CONN_MESSAGES[conn_type]
+        else:
+            conn_message = CONN_MESSAGES[conn_type]
+
         chat.history = list(chat.history) + [chosen.id]
         chat.save(update_fields=['history'])
 
@@ -404,5 +440,556 @@ class ChatNextRecommendationView(generics.RetrieveAPIView):
                 'similarity_score': round(chosen_score, 4),
             },
             'conn_type': conn_type,
-            'conn_message': CONN_MESSAGES[conn_type],
+            'conn_message': conn_message,
         })
+
+
+# ── 퀵 액션 칩 API ─────────────────────────────────────────────────────────────
+
+class ChatReasonView(APIView):
+    """GET /api/chats/{chat_id}/reason/?artifact_id=1 — 왜 이거예요?"""
+
+    @swagger_auto_schema(
+        operation_description="GET /api/chats/{chat_id}/reason/ — 유물 추천 이유 조회",
+        manual_parameters=[
+            openapi.Parameter('artifact_id', openapi.IN_QUERY, required=True,
+                              description="유물 cleveland_id", type=openapi.TYPE_INTEGER),
+        ],
+        responses={
+            200: openapi.Response('추천 이유', schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'artifact_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'conn_type': openapi.Schema(type=openapi.TYPE_STRING),
+                    'reason': openapi.Schema(type=openapi.TYPE_STRING),
+                    'keywords': openapi.Schema(type=openapi.TYPE_ARRAY,
+                                              items=openapi.Schema(type=openapi.TYPE_STRING)),
+                },
+            )),
+            400: 'artifact_id 누락',
+            404: '채팅 또는 유물 없음',
+        },
+    )
+    def get(self, request, chat_id):
+        chat, err = _get_chat_or_404(chat_id)
+        if err:
+            return err
+
+        artifact_id = request.query_params.get('artifact_id')
+        if not artifact_id:
+            return Response({'error': 'artifact_id가 필요합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        artifact = get_object_or_404(Artifact, cleveland_id=artifact_id)
+
+        feedback_history = list(chat.feedback_history)
+        history_count = len(chat.history)
+
+        if artifact.embedding_vector and chat.history:
+            viewed_artifacts = Artifact.objects.filter(id__in=chat.history, embedding_vector__isnull=False)
+            history_vecs = [a.embedding_vector for a in viewed_artifacts]
+            if history_vecs:
+                query_vec = np.array(history_vecs, dtype=np.float32).mean(axis=0)
+                query_norm = np.linalg.norm(query_vec)
+                if query_norm > 0:
+                    query_vec = query_vec / query_norm
+                    vec = np.array(artifact.embedding_vector, dtype=np.float32)
+                    norm = np.linalg.norm(vec)
+                    similarity = float(np.dot(query_vec, vec / norm)) if norm > 0 else 0.0
+                else:
+                    similarity = 0.0
+            else:
+                similarity = 0.0
+        else:
+            similarity = 0.0
+
+        conn_type = _decide_conn_type(similarity, feedback_history, history_count)
+
+        # 유사도 상위 키워드 3개: technique, culture, type 순
+        keywords = [v for v in [artifact.technique, artifact.culture, artifact.type] if v][:3]
+
+        # reason: Groq LLM 생성, 실패 시 템플릿 fallback
+        prompt = (
+            f"추천 유물: {artifact.title}, {artifact.type}, {artifact.department}, {artifact.culture}\n"
+            f"연결 방식: {conn_type}\n"
+            f"유사도 상위 키워드: {', '.join(keywords)}\n\n"
+            f"이 유물을 추천한 이유를 한국어로 2~3문장으로 설명해줘.\n"
+            f"유물명은 영어 그대로 써도 돼.\n"
+            f"반드시 한국어로만 출력해줘."
+        )
+        reason = _groq_generate(prompt) or CONN_MESSAGES[conn_type]
+
+        return Response({
+            'artifact_id': int(artifact_id),
+            'conn_type': conn_type,
+            'reason': reason,
+            'keywords': keywords,
+        })
+
+
+class ChatSimilarView(APIView):
+    """GET /api/chats/{chat_id}/similar/?artifact_id=1 — 비슷한 작품 더 보기"""
+
+    @swagger_auto_schema(
+        operation_description="GET /api/chats/{chat_id}/similar/ — 비슷한 유물 2~3개 조회",
+        manual_parameters=[
+            openapi.Parameter('artifact_id', openapi.IN_QUERY, required=True,
+                              description="유물 cleveland_id", type=openapi.TYPE_INTEGER),
+        ],
+        responses={
+            200: openapi.Response('유사 유물 목록', schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'artifact_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'similar_artifacts': openapi.Schema(type=openapi.TYPE_ARRAY,
+                                                        items=openapi.Schema(type=openapi.TYPE_OBJECT)),
+                },
+            )),
+            400: 'artifact_id 누락 또는 임베딩 없음',
+            404: '채팅 또는 유물 없음',
+        },
+    )
+    def get(self, request, chat_id):
+        chat, err = _get_chat_or_404(chat_id)
+        if err:
+            return err
+
+        artifact_id = request.query_params.get('artifact_id')
+        if not artifact_id:
+            return Response({'error': 'artifact_id가 필요합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        artifact = get_object_or_404(Artifact, cleveland_id=artifact_id)
+
+        if not artifact.embedding_vector:
+            return Response({'error': '해당 유물에 임베딩 벡터가 없습니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        query_vec = np.array(artifact.embedding_vector, dtype=np.float32)
+        query_norm = np.linalg.norm(query_vec)
+        if query_norm == 0:
+            return Response({'error': '임베딩 벡터가 zero vector입니다.'}, status=status.HTTP_400_BAD_REQUEST)
+        query_vec = query_vec / query_norm
+
+        viewed_ids = set(chat.history) | {artifact.id}
+        candidates = [
+            a for a in Artifact.objects.filter(embedding_vector__isnull=False)
+            if a.id not in viewed_ids
+        ]
+
+        scored = _cosine_scores(query_vec, candidates)
+
+        similar_artifacts = [
+            {
+                'artifact_id': a.cleveland_id,
+                'title': a.title,
+                'type': a.type,
+                'current_location': a.current_location,
+                'image_url': a.image_url,
+                'similarity_score': round(score, 4),
+            }
+            for score, a in scored[:3]
+        ]
+
+        return Response({'artifact_id': int(artifact_id), 'similar_artifacts': similar_artifacts})
+
+
+class ChatShortestView(APIView):
+    """GET /api/chats/{chat_id}/shortest/?artifact_id=1&current_location=102A — 짧은 경로로"""
+
+    @swagger_auto_schema(
+        operation_description="GET /api/chats/{chat_id}/shortest/ — 현재 위치에서 가장 가까운 유물 조회",
+        manual_parameters=[
+            openapi.Parameter('artifact_id', openapi.IN_QUERY, required=True,
+                              description="기준 유물 cleveland_id", type=openapi.TYPE_INTEGER),
+            openapi.Parameter('current_location', openapi.IN_QUERY, required=True,
+                              description="현재 위치 (예: 102A)", type=openapi.TYPE_STRING),
+        ],
+        responses={
+            200: openapi.Response('가장 가까운 유물', schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'artifact_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'title': openapi.Schema(type=openapi.TYPE_STRING),
+                    'type': openapi.Schema(type=openapi.TYPE_STRING),
+                    'current_location': openapi.Schema(type=openapi.TYPE_STRING),
+                    'image_url': openapi.Schema(type=openapi.TYPE_STRING),
+                    'distance': openapi.Schema(type=openapi.TYPE_STRING),
+                },
+            )),
+            400: '파라미터 누락',
+            404: '채팅 없음 또는 후보 없음',
+        },
+    )
+    def get(self, request, chat_id):
+        chat, err = _get_chat_or_404(chat_id)
+        if err:
+            return err
+
+        artifact_id = request.query_params.get('artifact_id')
+        current_location = request.query_params.get('current_location', '')
+
+        if not artifact_id:
+            return Response({'error': 'artifact_id가 필요합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not current_location:
+            return Response({'error': 'current_location이 필요합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        current_gallery = _gallery_number(current_location)
+
+        viewed_ids = set(chat.history) | {
+            a.id for a in Artifact.objects.filter(cleveland_id=artifact_id)
+        }
+        candidates = list(Artifact.objects.exclude(id__in=viewed_ids).exclude(current_location=''))
+
+        if not candidates:
+            return Response({'error': '추천 가능한 유물이 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
+
+        def _distance(a):
+            gallery = _gallery_number(a.current_location)
+            if gallery < 0:
+                return float('inf')
+            return abs(gallery - current_gallery)
+
+        candidates.sort(key=_distance)
+        chosen = candidates[0]
+
+        dist = _distance(chosen)
+        if dist == 0:
+            distance_label = "같은 갤러리"
+        elif dist <= 5:
+            distance_label = "근처 갤러리"
+        else:
+            distance_label = "다른 구역"
+
+        return Response({
+            'artifact_id': chosen.cleveland_id,
+            'title': chosen.title,
+            'type': chosen.type,
+            'current_location': chosen.current_location,
+            'image_url': chosen.image_url,
+            'distance': distance_label,
+        })
+
+
+class ChatSummaryView(APIView):
+    """GET /api/chats/{chat_id}/summary/ — 관람 요약"""
+
+    @swagger_auto_schema(
+        operation_description="GET /api/chats/{chat_id}/summary/ — 관람 요약 (통계 / 서사 / 후속 주제 / 스크립트)",
+        responses={
+            200: openapi.Response('관람 요약', schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'chat_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'stats': openapi.Schema(type=openapi.TYPE_OBJECT),
+                    'narrative': openapi.Schema(type=openapi.TYPE_STRING),
+                    'next_themes': openapi.Schema(type=openapi.TYPE_ARRAY,
+                                                  items=openapi.Schema(type=openapi.TYPE_STRING)),
+                    'script': openapi.Schema(type=openapi.TYPE_ARRAY,
+                                             items=openapi.Schema(type=openapi.TYPE_OBJECT)),
+                },
+            )),
+            404: '채팅 없음',
+        },
+    )
+    def get(self, request, chat_id):
+        chat, err = _get_chat_or_404(chat_id)
+        if err:
+            return err
+
+        # ── 1. 방문 유물 목록 (순서 보존) ────────────────────────────────
+        history_ids = list(chat.history)
+        artifact_map = {
+            a.id: a for a in Artifact.objects.filter(id__in=history_ids)
+        }
+        artifacts = [artifact_map[aid] for aid in history_ids if aid in artifact_map]
+
+        # ── 2. 통계 ───────────────────────────────────────────────────────
+        feedback_history = list(chat.feedback_history)
+        liked = feedback_history.count(1)
+        disliked = feedback_history.count(-1)
+
+        stats = {
+            'artifact_count': len(artifacts),
+            'liked': liked,
+            'disliked': disliked,
+        }
+
+        if not artifacts:
+            return Response({
+                'chat_id': chat_id,
+                'stats': stats,
+                'narrative': '아직 관람한 유물이 없어요.',
+                'next_themes': [],
+                'script': [],
+            })
+
+        # ── 3. 관람 서사 — 방문 유물의 keyword 시퀀스 기반 ───────────────
+        keywords_seen = []
+        for a in artifacts:
+            if a.keyword and a.keyword not in keywords_seen:
+                keywords_seen.append(a.keyword)
+
+        # narrative: Groq LLM 생성, 실패 시 템플릿 fallback
+        artifact_sequence = " → ".join(f"{a.title} ({a.type})" for a in artifacts)
+        narrative_prompt = (
+            f"관람한 유물 목록 (순서대로):\n{artifact_sequence}\n\n"
+            f"이 관람 여정을 한국어로 1~2문장으로 서사적으로 요약해줘.\n"
+            f"유물명은 영어 그대로 써도 돼.\n"
+            f"반드시 한국어로만 출력해줘."
+        )
+        if len(keywords_seen) >= 2:
+            fallback_narrative = f"{keywords_seen[0]}에서 시작해 {keywords_seen[-1]}으로 이어지는 여정이었어요."
+        elif len(keywords_seen) == 1:
+            fallback_narrative = f"{keywords_seen[0]} 중심으로 감상하신 여정이었어요."
+        else:
+            fallback_narrative = "다양한 유물을 감상하신 여정이었어요."
+
+        narrative = _groq_generate(narrative_prompt) or fallback_narrative
+
+        # ── 4. 후속 주제 추천 — 히스토리 평균 벡터 vs 미방문 키워드 ──────
+        history_vecs = [
+            a.embedding_vector for a in artifacts if a.embedding_vector
+        ]
+        next_themes = []
+        if history_vecs:
+            query_vec = np.array(history_vecs, dtype=np.float32).mean(axis=0)
+            query_norm = np.linalg.norm(query_vec)
+
+            if query_norm > 0:
+                query_vec = query_vec / query_norm
+                viewed_ids = set(history_ids)
+
+                # 키워드별 대표 벡터(평균) 계산
+                keyword_vecs: dict[str, list] = {}
+                for a in Artifact.objects.filter(embedding_vector__isnull=False).exclude(id__in=viewed_ids).exclude(keyword=''):
+                    keyword_vecs.setdefault(a.keyword, []).append(a.embedding_vector)
+
+                keyword_scores = []
+                for kw, vecs in keyword_vecs.items():
+                    if kw in keywords_seen:
+                        continue
+                    avg = np.array(vecs, dtype=np.float32).mean(axis=0)
+                    norm = np.linalg.norm(avg)
+                    if norm == 0:
+                        continue
+                    score = float(np.dot(query_vec, avg / norm))
+                    keyword_scores.append((score, kw))
+
+                keyword_scores.sort(key=lambda x: x[0], reverse=True)
+                next_themes = [kw for _, kw in keyword_scores[:2]]
+
+        # ── 5. 스크립트 — 유물 순서대로 conn_type 재구성 ─────────────────
+        script = []
+        for i, artifact in enumerate(artifacts):
+            if i == 0:
+                conn_type = "story"
+            else:
+                # 이전까지 히스토리 평균 벡터로 conn_type 결정
+                prev_vecs = [
+                    a.embedding_vector for a in artifacts[:i] if a.embedding_vector
+                ]
+                if prev_vecs and artifact.embedding_vector:
+                    pv = np.array(prev_vecs, dtype=np.float32).mean(axis=0)
+                    pv_norm = np.linalg.norm(pv)
+                    if pv_norm > 0:
+                        pv = pv / pv_norm
+                        av = np.array(artifact.embedding_vector, dtype=np.float32)
+                        av_norm = np.linalg.norm(av)
+                        sim = float(np.dot(pv, av / av_norm)) if av_norm > 0 else 0.0
+                    else:
+                        sim = 0.0
+                    partial_feedback = feedback_history[:i]
+                    conn_type = _decide_conn_type(sim, partial_feedback, i)
+                else:
+                    conn_type = "story"
+
+            script.append({
+                'artifact_id': artifact.cleveland_id,
+                'title': artifact.title,
+                'conn_message': CONN_MESSAGES[conn_type],
+            })
+
+        return Response({
+            'chat_id': chat_id,
+            'stats': stats,
+            'narrative': narrative,
+            'next_themes': next_themes,
+            'script': script,
+        })
+
+
+class ChatRouteView(APIView):
+    """GET /api/chats/{chat_id}/route/?current_location=102A&artifact_id=1 — 경로 안내"""
+
+    @swagger_auto_schema(
+        operation_description="GET /api/chats/{chat_id}/route/ — 현재 위치에서 목적지 유물까지 경로 안내",
+        manual_parameters=[
+            openapi.Parameter('current_location', openapi.IN_QUERY, required=True,
+                              description="현재 위치 (예: 102A)", type=openapi.TYPE_STRING),
+            openapi.Parameter('artifact_id', openapi.IN_QUERY, required=True,
+                              description="목적지 유물 cleveland_id", type=openapi.TYPE_INTEGER),
+        ],
+        responses={
+            200: openapi.Response('경로 안내', schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'destination': openapi.Schema(type=openapi.TYPE_OBJECT),
+                    'waypoints': openapi.Schema(type=openapi.TYPE_ARRAY,
+                                                items=openapi.Schema(type=openapi.TYPE_OBJECT)),
+                    'estimated_distance': openapi.Schema(type=openapi.TYPE_STRING),
+                },
+            )),
+            400: '파라미터 누락',
+            404: '채팅 또는 유물 없음',
+        },
+    )
+    def get(self, request, chat_id):
+        chat, err = _get_chat_or_404(chat_id)
+        if err:
+            return err
+
+        current_location = request.query_params.get('current_location', '')
+        artifact_id = request.query_params.get('artifact_id')
+
+        if not current_location:
+            return Response({'error': 'current_location이 필요합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not artifact_id:
+            return Response({'error': 'artifact_id가 필요합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        destination = get_object_or_404(Artifact, cleveland_id=artifact_id)
+
+        # ── 거리 계산 ─────────────────────────────────────────────────────
+        # TODO: 팀원 최적화 모델 연동 — 현재는 갤러리 번호 앞 숫자 차이로 임시 계산
+        src_gallery = _gallery_number(current_location)
+        dst_gallery = _gallery_number(destination.current_location)
+        raw_distance = abs(dst_gallery - src_gallery) if src_gallery >= 0 and dst_gallery >= 0 else 0
+
+        if raw_distance == 0:
+            estimated_distance = "같은 갤러리"
+        elif raw_distance < 20:
+            estimated_distance = "가까운 거리"
+        elif raw_distance < 50:
+            estimated_distance = "중간 거리"
+        else:
+            estimated_distance = "먼 거리"
+
+        # ── 경유 유물 생성 (거리 임계값 50 이상) ─────────────────────────
+        waypoints = []
+
+        if raw_distance >= 50:
+            # 히스토리 평균 벡터 계산
+            history_ids = list(chat.history)
+            viewed_artifacts = Artifact.objects.filter(id__in=history_ids, embedding_vector__isnull=False)
+            history_vecs = [a.embedding_vector for a in viewed_artifacts]
+
+            if history_vecs:
+                query_vec = np.array(history_vecs, dtype=np.float32).mean(axis=0)
+                query_norm = np.linalg.norm(query_vec)
+
+                if query_norm > 0:
+                    query_vec = query_vec / query_norm
+
+                    # TODO: 팀원 최적화 모델 연동 — 경로상 갤러리 범위 필터도 최적화 모델로 교체 예정
+                    lo_gallery = min(src_gallery, dst_gallery)
+                    hi_gallery = max(src_gallery, dst_gallery)
+
+                    viewed_ids = set(history_ids) | {destination.id}
+                    # 경로 사이 갤러리 번호에 있는 유물 필터
+                    between = [
+                        a for a in Artifact.objects.filter(embedding_vector__isnull=False).exclude(id__in=viewed_ids)
+                        if lo_gallery < _gallery_number(a.current_location) < hi_gallery
+                    ]
+
+                    scored = _cosine_scores(query_vec, between)
+
+                    for score, artifact in scored[:2]:
+                        waypoints.append({
+                            'artifact_id': artifact.cleveland_id,
+                            'title': artifact.title,
+                            'current_location': artifact.current_location,
+                            'image_url': artifact.image_url,
+                            'conn_type': 'shock',
+                            'conn_message': CONN_MESSAGES['shock'],
+                        })
+
+        return Response({
+            'destination': {
+                'artifact_id': destination.cleveland_id,
+                'title': destination.title,
+                'current_location': destination.current_location,
+                'image_url': destination.image_url,
+            },
+            'waypoints': waypoints,
+            'estimated_distance': estimated_distance,
+        })
+
+
+class ChatHistoryView(APIView):
+    """GET /api/chats/{chat_id}/history/ — 관람 타임라인"""
+
+    @swagger_auto_schema(
+        operation_description="GET /api/chats/{chat_id}/history/ — 방문 유물 목록 순서대로 반환",
+        responses={
+            200: openapi.Response('관람 타임라인', schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'chat_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'artifacts': openapi.Schema(type=openapi.TYPE_ARRAY,
+                                                items=openapi.Schema(type=openapi.TYPE_OBJECT)),
+                },
+            )),
+            404: '채팅 없음',
+        },
+    )
+    def get(self, request, chat_id):
+        chat, err = _get_chat_or_404(chat_id)
+        if err:
+            return err
+
+        history_ids = list(chat.history)
+        artifact_map = {
+            a.id: a for a in Artifact.objects.filter(id__in=history_ids)
+        }
+
+        artifacts = [
+            {
+                'artifact_id': artifact_map[aid].cleveland_id,
+                'title': artifact_map[aid].title,
+                'type': artifact_map[aid].type,
+                'current_location': artifact_map[aid].current_location,
+                'image_url': artifact_map[aid].image_url,
+            }
+            for aid in history_ids if aid in artifact_map
+        ]
+
+        return Response({'chat_id': chat_id, 'artifacts': artifacts})
+
+
+class ChatShareView(APIView):
+    """POST /api/chats/{chat_id}/share/ — 여정 공유 URL 생성"""
+
+    @swagger_auto_schema(
+        operation_description="POST /api/chats/{chat_id}/share/ — 고유 공유 URL 생성 (이미 있으면 기존 URL 반환)",
+        responses={
+            200: openapi.Response('공유 URL', schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'chat_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'share_url': openapi.Schema(type=openapi.TYPE_STRING),
+                },
+            )),
+            404: '채팅 없음',
+        },
+    )
+    def post(self, request, chat_id):
+        import uuid
+        chat, err = _get_chat_or_404(chat_id)
+        if err:
+            return err
+
+        if not chat.share_token:
+            chat.share_token = uuid.uuid4()
+            chat.save(update_fields=['share_token'])
+
+        base_url = request.build_absolute_uri('/').rstrip('/')
+        share_url = f"{base_url}/shared/{chat.share_token}/"
+
+        return Response({'chat_id': chat_id, 'share_url': share_url})

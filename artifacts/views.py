@@ -1,14 +1,12 @@
 import numpy as np
-from rest_framework import status
+from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.generics import get_object_or_404
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
-from openai import OpenAI
 from django.conf import settings
 
-from sessions.models import Session
 from .models import Artifact
 from .serializers import ArtifactDetailSerializer
 
@@ -28,49 +26,40 @@ class SyncArtifactsView(APIView):
         return Response({'message': '동기화 작업이 시작되었습니다.'}, status=status.HTTP_202_ACCEPTED)
 
 
-class ArtifactDetailView(APIView):
+class ArtifactDetailView(generics.RetrieveAPIView):
+    serializer_class = ArtifactDetailSerializer
+    lookup_field = 'cleveland_id'
+    lookup_url_kwarg = 'artifact_id'
+
+    def get_queryset(self):
+        return Artifact.objects.all()
 
     @swagger_auto_schema(
-        operation_description="GET /api/artifacts/{artifact_id}/?session_id=xxx — 유물 상세 정보 조회 (session_id 전달 시 맞춤 설명 포함)",
-        manual_parameters=[
-            openapi.Parameter('session_id', openapi.IN_QUERY, description="세션 ID (선택)", type=openapi.TYPE_INTEGER),
-        ],
-        responses={200: "유물 상세 조회 성공"},
+        operation_description="GET /api/artifacts/{artifact_id}/ — 유물 상세 정보 조회",
+        responses={
+            200: openapi.Response('유물 상세 조회 성공', schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'artifact_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'title': openapi.Schema(type=openapi.TYPE_STRING),
+                    'type': openapi.Schema(type=openapi.TYPE_STRING),
+                    'department': openapi.Schema(type=openapi.TYPE_STRING),
+                    'collection': openapi.Schema(type=openapi.TYPE_STRING),
+                    'technique': openapi.Schema(type=openapi.TYPE_STRING),
+                    'culture': openapi.Schema(type=openapi.TYPE_STRING),
+                    'creation_date_earliest': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'creation_date_latest': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'current_location': openapi.Schema(type=openapi.TYPE_STRING),
+                    'image_url': openapi.Schema(type=openapi.TYPE_STRING),
+                    'description': openapi.Schema(type=openapi.TYPE_STRING),
+                    'did_you_know': openapi.Schema(type=openapi.TYPE_STRING),
+                },
+            )),
+            404: '유물 없음',
+        },
     )
-    def get(self, request, artifact_id):
-        artifact = get_object_or_404(Artifact, cleveland_id=artifact_id)
-        data = ArtifactDetailSerializer(artifact).data
-
-        session_id = request.query_params.get('session_id')
-        if session_id:
-            try:
-                session = Session.objects.get(id=session_id)
-            except Session.DoesNotExist:
-                return Response({'error': '세션을 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
-
-            knowledge_level = session.knowledge_level or 'intermediate'
-            level_guide = {'beginner': '쉬운 말로', 'intermediate': '일반적으로', 'advanced': '학술적으로'}
-            prompt = (
-                f"다음 유물에 대해 {knowledge_level} 수준의 관람객에게 맞는 설명을 3-4문장으로 작성해줘.\n"
-                f"- 제목: {artifact.title}\n"
-                f"- 문화권: {artifact.culture}\n"
-                f"- 기법: {artifact.technique}\n"
-                f"- 부서: {artifact.department}\n"
-                f"- 기본 설명: {artifact.description}\n"
-                f"- 흥미로운 사실: {artifact.did_you_know}\n"
-                f"한국어로 답해줘. {level_guide.get(knowledge_level, '일반적으로')} 설명해줘."
-            )
-            try:
-                gpt_response = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                data['custom_description'] = gpt_response.choices[0].message.content
-                data['knowledge_level'] = knowledge_level
-            except Exception as e:
-                return Response({'error': f'GPT 호출 실패: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        return Response(data)
+    def get(self, request, *args, **kwargs):
+        return self.retrieve(request, *args, **kwargs)
 
 
 class ArtifactRelatedView(APIView):

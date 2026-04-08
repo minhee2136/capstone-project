@@ -11,6 +11,7 @@ class Chat(models.Model):
     )
     history = models.JSONField(default=list, verbose_name='방문 유물 ID 리스트')
     feedback_history = models.JSONField(default=list, verbose_name='피드백 이력')
+    share_token = models.UUIDField(null=True, blank=True, unique=True, verbose_name='공유 토큰')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
