@@ -12,7 +12,8 @@ from sessions.models import Session
 from .models import Artifact
 from .serializers import ArtifactDetailSerializer
 
-client = OpenAI(api_key=settings.OPENAI_API_KEY)
+from groq import Groq
+client = Groq(api_key=settings.GROQ_API_KEY)
 
 
 class SyncArtifactsView(APIView):
@@ -61,7 +62,7 @@ class ArtifactDetailView(APIView):
             )
             try:
                 gpt_response = client.chat.completions.create(
-                    model=settings.GPT_MODEL,
+                    model="llama-3.3-70b-versatile",
                     messages=[{"role": "user", "content": prompt}],
                 )
                 data['custom_description'] = gpt_response.choices[0].message.content
