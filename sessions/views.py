@@ -114,7 +114,7 @@ class SessionDetailView(APIView):
 class SessionCandidatesView(APIView):
 
     @swagger_auto_schema(
-        operation_description="POST /api/sessions/{session_id}/candidates — 코사인 유사도 기반 추천 유물 Top 10",
+        operation_description="POST /api/sessions/{session_id}/candidates ",
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             properties={'mode': openapi.Schema(type=openapi.TYPE_STRING, default='recommendation')},
@@ -178,7 +178,7 @@ class SessionCandidatesView(APIView):
             results.append((score, artifact))
 
         results.sort(key=lambda x: x[0], reverse=True)
-        top10 = results[:10]
+        top50 = results[:50]
 
         candidates = [
             {
@@ -188,7 +188,7 @@ class SessionCandidatesView(APIView):
                 'similarity_score': round(score, 4),
                 'image_url': a.image_url,
             }
-            for score, a in top10
+            for score, a in top50
         ]
 
         return Response({'candidates': candidates})
