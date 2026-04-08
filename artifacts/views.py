@@ -22,7 +22,7 @@ class SyncArtifactsView(APIView):
     )
     def post(self, request):
         from artifacts.tasks import sync_artifacts_task
-        sync_artifacts_task.delay()
+        sync_artifacts_task()
         return Response({'message': '동기화 작업이 시작되었습니다.'}, status=status.HTTP_202_ACCEPTED)
 
 

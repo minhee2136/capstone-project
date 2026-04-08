@@ -1,13 +1,15 @@
+import logging
 import random
 import re
 import numpy as np
+
+logger = logging.getLogger(__name__)
 from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.generics import get_object_or_404
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
-from openai import OpenAI
 from django.conf import settings
 from sentence_transformers import SentenceTransformer
 from groq import Groq
@@ -15,23 +17,36 @@ from groq import Groq
 from sessions.models import Session
 from artifacts.models import Artifact
 from .models import Chat, Message, Feedback
-from .serializers import MessageCreateSerializer, MessageSerializer, FeedbackCreateSerializer
 
 embedding_model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 groq_client = Groq(api_key=settings.GROQ_API_KEY)
-GROQ_MODEL = "llama3-8b-8192"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 def _groq_generate(prompt: str) -> str | None:
     """Groq LLM 호출. 실패 시 None 반환."""
+    logger.debug("[Groq] 호출 시작\n%s", prompt)
     try:
         resp = groq_client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[{"role": "user", "content": prompt}],
         )
-        return resp.choices[0].message.content.strip()
-    except Exception:
+        result = resp.choices[0].message.content.strip()
+        logger.debug("[Groq] 응답: %s", result)
+        return result
+    except Exception as e:
+        logger.error("[Groq] API 호출 실패: %s", e, exc_info=True)
+        print(f"[Groq ERROR] API 호출 실패: {e}")
         return None
+
+KEYWORD_EMBEDDING_TEXT = {
+    "회화": "painting portrait figure canvas oil",
+    "조각·공예": "sculpture metalwork ceramic craft vessel",
+    "전쟁·무기": "arms armor weapon sword shield battle",
+    "동양 문화": "chinese japanese korean asian art culture",
+    "신화·종교": "religion myth deity ritual sacred divine",
+    "역사·기록": "manuscript book history document record",
+}
 
 CONN_MESSAGES = {
     "story":    "이전 작품과 같은 흐름으로 이어지는 작품이에요.",
@@ -79,109 +94,6 @@ def _cosine_scores(query_vec, candidates):
     return scored
 
 
-class ChatMessageView(APIView):
-
-    @swagger_auto_schema(
-        operation_description="POST /api/chat/{session_id}/messages/ — 채팅 메시지 전송",
-        request_body=MessageCreateSerializer,
-        responses={201: "메시지 전송 성공"},
-    )
-    def post(self, request, session_id):
-        session = get_object_or_404(Session, id=session_id)
-        serializer = MessageCreateSerializer(data=request.data)
-
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        user_message = serializer.validated_data['message']
-
-        # 사용자 메시지 저장
-        Message.objects.create(
-            session=session,
-            role=Message.Role.USER,
-            content=user_message,
-        )
-
-        # 이전 대화 히스토리 조회
-        history = Message.objects.filter(session=session).order_by('created_at')
-        gpt_messages = [
-            {
-                "role": "system",
-                "content": (
-                    f"당신은 뮤지엄 큐레이터입니다. "
-                    f"사용자의 관심사: {session.interest_tags}, "
-                    f"지식 수준: {session.knowledge_level}, "
-                    f"관람 희망 시간: {session.view_time_minutes}분. "
-                    f"사용자 맞춤형 유물을 추천하고 설명해주세요."
-                )
-            }
-        ]
-        for msg in history:
-            gpt_messages.append({
-                "role": msg.role,
-                "content": msg.content,
-            })
-
-        # GPT-4o-mini 호출
-        client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        gpt_response = client.chat.completions.create(
-            model=settings.GPT_MODEL,
-            messages=gpt_messages,
-        )
-        assistant_content = gpt_response.choices[0].message.content
-
-        # 어시스턴트 메시지 저장
-        assistant_message = Message.objects.create(
-            session=session,
-            role=Message.Role.ASSISTANT,
-            content=assistant_content,
-        )
-
-        return Response(
-            {
-                'message_id': assistant_message.id,
-                'role': assistant_message.role,
-                'content': assistant_message.content,
-                'artifact': None,
-                'created_at': assistant_message.created_at,
-            },
-            status=status.HTTP_201_CREATED,
-        )
-
-    @swagger_auto_schema(
-        operation_description="GET /api/chat/{session_id}/messages/ — 채팅 히스토리 조회",
-        responses={200: "채팅 히스토리 조회 성공"},
-    )
-    def get(self, request, session_id):
-        session = get_object_or_404(Session, id=session_id)
-        messages = Message.objects.filter(session=session).order_by('created_at')
-        serializer = MessageSerializer(messages, many=True)
-        return Response({'messages': serializer.data})
-
-
-class FeedbackView(APIView):
-
-    @swagger_auto_schema(
-        operation_description="POST /api/recommendations/{rec_id}/feedback/ — 피드백 제출",
-        request_body=FeedbackCreateSerializer,
-        responses={201: "피드백 제출 성공"},
-    )
-    def post(self, request, rec_id):
-        session = get_object_or_404(Session, id=request.data.get('session_id'))
-        serializer = FeedbackCreateSerializer(data=request.data)
-
-        if serializer.is_valid():
-            feedback = Feedback.objects.create(
-                session=session,
-                artifact_id=rec_id,
-                feedback_type=serializer.validated_data['feedback_type'],
-            )
-            return Response(
-                FeedbackCreateSerializer(feedback).data,
-                status=status.HTTP_201_CREATED,
-            )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 # ── Chat 기반 API ──────────────────────────────────────────────────────────────
 
 class ChatCreateView(APIView):
@@ -204,14 +116,14 @@ class ChatCreateView(APIView):
     )
     def post(self, request):
         session = get_object_or_404(Session, id=request.data.get('session_id'))
-        chat = Chat.objects.create(session=session)
+        chat, created = Chat.objects.get_or_create(session=session)
         return Response(
             {
                 'chat_id': chat.id,
                 'session_id': chat.session_id,
                 'created_at': chat.created_at.isoformat().replace('+00:00', 'Z'),
             },
-            status=status.HTTP_201_CREATED,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 
 
@@ -258,7 +170,30 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
         if not candidates:
             return Response({'chat_id': chat_id, 'recommendations': []})
 
-        if interest_tag:
+        # 쿼리 벡터 생성 (3가지 경우)
+        if interest_keywords and interest_tag:
+            # 경우 3: 키워드 + 태그 둘 다 있을 때 → 각각 인코딩 후 평균
+            keyword_text = " ".join(
+                KEYWORD_EMBEDDING_TEXT[k] for k in interest_keywords if k in KEYWORD_EMBEDDING_TEXT
+            )
+            kw_vec = embedding_model.encode(keyword_text).astype(np.float32) if keyword_text else None
+            tag_vec = embedding_model.encode(interest_tag).astype(np.float32)
+            if kw_vec is not None:
+                query_vec = (kw_vec + tag_vec) / 2
+            else:
+                query_vec = tag_vec
+        elif interest_keywords:
+            # 경우 1: 키워드만 있을 때 → 키워드 영어 텍스트 합쳐서 임베딩
+            keyword_text = " ".join(
+                KEYWORD_EMBEDDING_TEXT[k] for k in interest_keywords if k in KEYWORD_EMBEDDING_TEXT
+            )
+            if keyword_text:
+                query_vec = embedding_model.encode(keyword_text).astype(np.float32)
+            else:
+                vecs = np.array([a.embedding_vector for a in candidates], dtype=np.float32)
+                query_vec = vecs.mean(axis=0)
+        elif interest_tag:
+            # 경우 2: 태그만 있을 때 → 태그 텍스트 그대로 임베딩
             query_vec = embedding_model.encode(interest_tag).astype(np.float32)
         else:
             vecs = np.array([a.embedding_vector for a in candidates], dtype=np.float32)
@@ -270,6 +205,7 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
         query_vec = query_vec / query_norm
 
         scored = _cosine_scores(query_vec, candidates)
+        top5 = scored[:5]
         recommendations = [
             {
                 'artifact_id': a.cleveland_id,
@@ -279,9 +215,28 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
                 'image_url': a.image_url,
                 'similarity_score': round(score, 4),
             }
-            for score, a in scored[:5]
+            for score, a in top5
         ]
-        return Response({'chat_id': chat_id, 'recommendations': recommendations})
+
+        # 안내 멘트 생성
+        _FALLBACK_MESSAGE = "관심 키워드를 바탕으로 고른 작품들이에요. 하나를 선택하면 거기서부터 이어드릴게요."
+        title_list = ", ".join(a.title for _, a in top5)
+        keywords_str = ", ".join(interest_keywords) if interest_keywords else (interest_tag or "")
+        if keywords_str and title_list:
+            prompt = (
+                f"사용자의 관심 키워드: {keywords_str}\n"
+                f"추천된 작품 5개: {title_list}\n\n"
+                "박물관 큐레이터처럼 자연스러운 한국어로 2문장 안내 멘트 작성해줘.\n"
+                "첫 문장은 관심사 기반으로 작품을 골랐다는 내용, "
+                "두 번째 문장은 하나를 선택하면 거기서부터 이어간다는 내용.\n"
+                "작품명은 영어 그대로 써도 돼.\n"
+                "반드시 한국어로만 출력해줘. 한국어가 아닌 다른 언어(영어, 베트남어, 중국어 등)는 절대 사용하지 마."
+            )
+            message = _groq_generate(prompt) or _FALLBACK_MESSAGE
+        else:
+            message = _FALLBACK_MESSAGE
+
+        return Response({'chat_id': chat_id, 'message': message, 'recommendations': recommendations})
 
 
 class ChatFeedbackView(generics.CreateAPIView):
@@ -326,8 +281,14 @@ class ChatFeedbackView(generics.CreateAPIView):
         if not Artifact.objects.filter(cleveland_id=artifact_id).exists():
             return Response({'error': '존재하지 않는 artifact_id입니다.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        artifact = Artifact.objects.get(cleveland_id=artifact_id)
+        history = list(chat.history)
+        existing_ids = [entry['artifact_id'] for entry in history if isinstance(entry, dict)]
+        if artifact.id not in existing_ids:
+            history.append({'artifact_id': artifact.id, 'conn_type': 'story', 'conn_message': ''})
+        chat.history = history
         chat.feedback_history = list(chat.feedback_history) + [feedback_int]
-        chat.save(update_fields=['feedback_history'])
+        chat.save(update_fields=['history', 'feedback_history'])
 
         return Response(
             {'chat_id': chat_id, 'artifact_id': artifact_id, 'feedback': feedback_int},
@@ -368,7 +329,13 @@ class ChatNextRecommendationView(generics.RetrieveAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        viewed_artifacts = Artifact.objects.filter(id__in=chat.history, embedding_vector__isnull=False)
+        history_entries = list(chat.history)
+        history_artifact_ids = [
+            entry['artifact_id'] if isinstance(entry, dict) else entry
+            for entry in history_entries
+        ]
+
+        viewed_artifacts = Artifact.objects.filter(id__in=history_artifact_ids, embedding_vector__isnull=False)
         history_vecs = [a.embedding_vector for a in viewed_artifacts]
 
         if not history_vecs:
@@ -380,7 +347,7 @@ class ChatNextRecommendationView(generics.RetrieveAPIView):
             return Response({'error': '쿼리 벡터가 zero vector입니다.'}, status=status.HTTP_400_BAD_REQUEST)
         query_vec = query_vec / query_norm
 
-        viewed_ids = set(chat.history)
+        viewed_ids = set(history_artifact_ids)
         candidates = [
             a for a in Artifact.objects.filter(embedding_vector__isnull=False)
             if a.id not in viewed_ids
@@ -408,8 +375,9 @@ class ChatNextRecommendationView(generics.RetrieveAPIView):
         # ── conn_message: Groq LLM 생성, 실패 시 템플릿 fallback ──────────
         prev_artifact = None
         if chat.history:
-            prev_artifacts = Artifact.objects.filter(id=list(chat.history)[-1])
-            prev_artifact = prev_artifacts.first()
+            last_entry = list(chat.history)[-1]
+            last_id = last_entry['artifact_id'] if isinstance(last_entry, dict) else last_entry
+            prev_artifact = Artifact.objects.filter(id=last_id).first()
 
         if prev_artifact:
             prompt = (
@@ -420,13 +388,25 @@ class ChatNextRecommendationView(generics.RetrieveAPIView):
                 f"유물명은 영어 그대로 써도 돼.\n"
                 f"conn_type이 story면 흐름이 이어짐, mystery면 의외의 연결, "
                 f"contrast면 대비, shock면 발길을 멈추게 하는 작품으로 설명해줘.\n"
-                f"반드시 한국어로만 출력해줘."
+                f"반드시 한국어로만 출력해줘. 한국어가 아닌 다른 언어(영어, 베트남어, 중국어 등)는 절대 사용하지 마."
             )
-            conn_message = _groq_generate(prompt) or CONN_MESSAGES[conn_type]
+            print(f"[Groq] conn_message 생성 시작 — prev={prev_artifact.title!r}, next={chosen.title!r}, conn_type={conn_type}")
+            groq_result = _groq_generate(prompt)
+            if groq_result:
+                print(f"[Groq] conn_message 생성 성공: {groq_result!r}")
+                conn_message = groq_result
+            else:
+                print(f"[Groq] conn_message 생성 실패, fallback 사용 (conn_type={conn_type})")
+                logger.warning("[conn_message] Groq 실패, fallback 사용 (conn_type=%s)", conn_type)
+                conn_message = CONN_MESSAGES[conn_type]
         else:
             conn_message = CONN_MESSAGES[conn_type]
 
-        chat.history = list(chat.history) + [chosen.id]
+        chat.history = list(chat.history) + [{
+            'artifact_id': chosen.id,
+            'conn_type': conn_type,
+            'conn_message': conn_message,
+        }]
         chat.save(update_fields=['history'])
 
         return Response({
@@ -514,7 +494,7 @@ class ChatReasonView(APIView):
             f"유사도 상위 키워드: {', '.join(keywords)}\n\n"
             f"이 유물을 추천한 이유를 한국어로 2~3문장으로 설명해줘.\n"
             f"유물명은 영어 그대로 써도 돼.\n"
-            f"반드시 한국어로만 출력해줘."
+            f"반드시 한국어로만 출력해줘. 한국어가 아닌 다른 언어(영어, 베트남어, 중국어 등)는 절대 사용하지 마."
         )
         reason = _groq_generate(prompt) or CONN_MESSAGES[conn_type]
 
@@ -695,7 +675,8 @@ class ChatSummaryView(APIView):
             return err
 
         # ── 1. 방문 유물 목록 (순서 보존) ────────────────────────────────
-        history_ids = list(chat.history)
+        history_entries = list(chat.history)  # [{'artifact_id': ..., 'conn_type': ..., 'conn_message': ...}, ...]
+        history_ids = [entry['artifact_id'] for entry in history_entries if isinstance(entry, dict)]
         artifact_map = {
             a.id: a for a in Artifact.objects.filter(id__in=history_ids)
         }
@@ -733,7 +714,7 @@ class ChatSummaryView(APIView):
             f"관람한 유물 목록 (순서대로):\n{artifact_sequence}\n\n"
             f"이 관람 여정을 한국어로 1~2문장으로 서사적으로 요약해줘.\n"
             f"유물명은 영어 그대로 써도 돼.\n"
-            f"반드시 한국어로만 출력해줘."
+            f"반드시 한국어로만 출력해줘. 한국어가 아닌 다른 언어(영어, 베트남어, 중국어 등)는 절대 사용하지 마."
         )
         if len(keywords_seen) >= 2:
             fallback_narrative = f"{keywords_seen[0]}에서 시작해 {keywords_seen[-1]}으로 이어지는 여정이었어요."
@@ -776,35 +757,20 @@ class ChatSummaryView(APIView):
                 keyword_scores.sort(key=lambda x: x[0], reverse=True)
                 next_themes = [kw for _, kw in keyword_scores[:2]]
 
-        # ── 5. 스크립트 — 유물 순서대로 conn_type 재구성 ─────────────────
+        # ── 5. 스크립트 — history에 저장된 conn_type/conn_message 사용 ──
+        entry_map = {
+            entry['artifact_id']: entry
+            for entry in history_entries if isinstance(entry, dict)
+        }
         script = []
-        for i, artifact in enumerate(artifacts):
-            if i == 0:
-                conn_type = "story"
-            else:
-                # 이전까지 히스토리 평균 벡터로 conn_type 결정
-                prev_vecs = [
-                    a.embedding_vector for a in artifacts[:i] if a.embedding_vector
-                ]
-                if prev_vecs and artifact.embedding_vector:
-                    pv = np.array(prev_vecs, dtype=np.float32).mean(axis=0)
-                    pv_norm = np.linalg.norm(pv)
-                    if pv_norm > 0:
-                        pv = pv / pv_norm
-                        av = np.array(artifact.embedding_vector, dtype=np.float32)
-                        av_norm = np.linalg.norm(av)
-                        sim = float(np.dot(pv, av / av_norm)) if av_norm > 0 else 0.0
-                    else:
-                        sim = 0.0
-                    partial_feedback = feedback_history[:i]
-                    conn_type = _decide_conn_type(sim, partial_feedback, i)
-                else:
-                    conn_type = "story"
-
+        for artifact in artifacts:
+            entry = entry_map.get(artifact.id, {})
+            conn_message = entry.get('conn_message') or CONN_MESSAGES.get(entry.get('conn_type', 'story'), '')
             script.append({
                 'artifact_id': artifact.cleveland_id,
                 'title': artifact.title,
-                'conn_message': CONN_MESSAGES[conn_type],
+                'conn_type': entry.get('conn_type', 'story'),
+                'conn_message': conn_message,
             })
 
         return Response({

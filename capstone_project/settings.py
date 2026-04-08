@@ -109,6 +109,23 @@ STATIC_URL = 'static/'
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 GPT_MODEL = os.getenv('GPT_MODEL', 'gpt-4o-mini')
 
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'chat': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+    },
+}
+
 REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
