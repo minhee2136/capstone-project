@@ -2,6 +2,26 @@ from django.db import models
 from sessions.models import Session
 
 
+class Chat(models.Model):
+    session = models.ForeignKey(
+        Session,
+        on_delete=models.CASCADE,
+        related_name='chats',
+        verbose_name='세션',
+    )
+    history = models.JSONField(default=list, verbose_name='방문 유물 ID 리스트')
+    feedback_history = models.JSONField(default=list, verbose_name='피드백 이력')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'chats'
+        verbose_name = '채팅'
+        verbose_name_plural = '채팅 목록'
+
+    def __str__(self):
+        return f"Chat {self.id} - Session {self.session_id}"
+
+
 class Message(models.Model):
 
     class Role(models.TextChoices):

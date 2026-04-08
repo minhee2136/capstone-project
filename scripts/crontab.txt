@@ -1,0 +1,6 @@
+# CMA 유물 수집 파이프라인 — 매일 오전 6시 실행
+# 등록 방법:
+#   crontab -e
+#   아래 줄을 붙여넣고 PROJECT_DIR 경로를 실제 경로로 수정
+
+0 6 * * * /bin/bash /Users/minhee/capstone-project/scripts/collect_pipeline.sh

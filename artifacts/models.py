@@ -25,6 +25,7 @@ class Artifact(models.Model):
     share_license_status = models.CharField(max_length=20, default='CC0')
     is_active = models.BooleanField(default=False)
     updated_at = models.CharField(max_length=50, blank=True)
+    keyword = models.TextField(blank=True)
 
     def __str__(self):
         return f"{self.title} ({self.creation_date_earliest})"

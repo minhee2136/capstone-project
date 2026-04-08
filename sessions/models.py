@@ -6,9 +6,9 @@ from users.models import User
 class Session(models.Model):
 
     class KnowledgeLevel(models.TextChoices):
-        BEGINNER = 'beginner', '초급'
-        INTERMEDIATE = 'intermediate', '중급'
-        ADVANCED = 'advanced', '고급'
+        BEGINNER = '초급', '초급'
+        INTERMEDIATE = '중급', '중급'
+        EXPERT = '전문가', '전문가'
 
     user = models.ForeignKey(
         User,
@@ -34,6 +34,9 @@ class Session(models.Model):
         blank=True,
         verbose_name='관람 희망 시간(분)',
     )
+    visit_hour = models.IntegerField(null=True, blank=True, verbose_name='관람 희망 시간(시)')
+    visit_minute = models.IntegerField(null=True, blank=True, verbose_name='관람 희망 시간(분)')
+    interest_tag = models.CharField(max_length=100, null=True, blank=True, verbose_name='관심 태그')
     interest_embedding = ArrayField(
         models.FloatField(),
         null=True,
