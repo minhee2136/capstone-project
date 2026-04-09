@@ -1,7 +1,9 @@
 import logging
 import random
 import re
+import unicodedata
 import numpy as np
+from django.db.models import Q
 
 logger = logging.getLogger(__name__)
 from rest_framework import generics, status
@@ -23,15 +25,52 @@ groq_client = Groq(api_key=settings.GROQ_API_KEY)
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
+_KOREAN_SYSTEM_MSG = (
+    "You are a Korean museum curator assistant. "
+    "Always respond in Korean only. "
+    "Never use Chinese characters, Japanese characters, Cyrillic, or any script other than Korean Hangul and Latin. "
+    "Artwork titles must stay in their original English (Latin) form. "
+    "Every single word that is not an artwork title must be written in Korean Hangul."
+)
+
+# 허용 유니코드 범주: 한글(Hangul) + Latin(ASCII) + 공통 구두점·숫자
+_ALLOWED_SCRIPTS = {'Hangul', 'Latin', 'Common', 'Inherited'}
+
+
+def _sanitize_language(text: str) -> str:
+    """한글·영어·숫자·구두점 외 문자(한자·러시아어 등)를 제거한다."""
+    result = []
+    for ch in text:
+        script = unicodedata.name(ch, '').split()[0] if ch.strip() else ch
+        cat = unicodedata.category(ch)
+        # 공백은 그대로 유지
+        if cat == 'Zs' or ch in ('\n', '\r', '\t'):
+            result.append(ch)
+            continue
+        # ASCII(영어·숫자·구두점) 허용
+        if ord(ch) < 128:
+            result.append(ch)
+            continue
+        # 한글 음절·자모 허용
+        if '\uAC00' <= ch <= '\uD7FF' or '\u1100' <= ch <= '\u11FF' or '\u3130' <= ch <= '\u318F':
+            result.append(ch)
+            continue
+        # 그 외(한자·키릴·일본어 등)는 제거
+    return re.sub(r'  +', ' ', ''.join(result)).strip()
+
+
 def _groq_generate(prompt: str) -> str | None:
     """Groq LLM 호출. 실패 시 None 반환."""
     logger.debug("[Groq] 호출 시작\n%s", prompt)
     try:
         resp = groq_client.chat.completions.create(
             model=GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": _KOREAN_SYSTEM_MSG},
+                {"role": "user", "content": prompt},
+            ],
         )
-        result = resp.choices[0].message.content.strip()
+        result = _sanitize_language(resp.choices[0].message.content.strip())
         logger.debug("[Groq] 응답: %s", result)
         return result
     except Exception as e:
@@ -156,15 +195,24 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
         interest_keywords = session.interest_tags or []
         interest_tag = session.interest_tag
 
+        print(f"[DEBUG] session interest_keywords: {interest_keywords}")
+        print(f"[DEBUG] session interest_tag: {interest_tag}")
+
         if interest_keywords:
+            kw_q = Q()
+            for kw in interest_keywords:
+                kw_q |= Q(keyword=kw)
             candidate_qs = Artifact.objects.filter(
-                keyword__in=interest_keywords,
+                kw_q,
                 embedding_vector__isnull=False,
             )
         else:
             candidate_qs = Artifact.objects.filter(embedding_vector__isnull=False)
 
-        viewed_ids = set(chat.history)
+        print(f"[DEBUG] 후보 유물 수: {candidate_qs.count()}")
+        print(f"[DEBUG] 임베딩 있는 유물 수: {candidate_qs.exclude(embedding_vector=None).count()}")
+
+        viewed_ids = {h['artifact_id'] for h in chat.history}
         candidates = [a for a in candidate_qs if a.id not in viewed_ids]
 
         if not candidates:
@@ -199,6 +247,8 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
             vecs = np.array([a.embedding_vector for a in candidates], dtype=np.float32)
             query_vec = vecs.mean(axis=0)
 
+        print(f"[DEBUG] 쿼리 벡터: {query_vec is not None}")
+
         query_norm = np.linalg.norm(query_vec)
         if query_norm == 0:
             return Response({'error': '쿼리 벡터가 zero vector입니다.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -226,11 +276,10 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
             prompt = (
                 f"사용자의 관심 키워드: {keywords_str}\n"
                 f"추천된 작품 5개: {title_list}\n\n"
-                "박물관 큐레이터처럼 자연스러운 한국어로 2문장 안내 멘트 작성해줘.\n"
-                "첫 문장은 관심사 기반으로 작품을 골랐다는 내용, "
-                "두 번째 문장은 하나를 선택하면 거기서부터 이어간다는 내용.\n"
-                "작품명은 영어 그대로 써도 돼.\n"
-                "반드시 한국어로만 출력해줘. 한국어가 아닌 다른 언어(영어, 베트남어, 중국어 등)는 절대 사용하지 마."
+                "박물관 큐레이터처럼 자연스러운 한국어로 정확히 2문장만 작성해줘.\n"
+                "첫 문장: 관심사를 바탕으로 작품을 골랐다는 내용.\n"
+                "두 번째 문장: 하나를 선택하면 거기서부터 함께 감상한다는 내용.\n"
+                "작품명은 영어 원문 그대로 유지하고, 나머지는 반드시 한국어로만 써줘."
             )
             message = _groq_generate(prompt) or _FALLBACK_MESSAGE
         else:
@@ -465,7 +514,7 @@ class ChatReasonView(APIView):
         history_count = len(chat.history)
 
         if artifact.embedding_vector and chat.history:
-            viewed_artifacts = Artifact.objects.filter(id__in=chat.history, embedding_vector__isnull=False)
+            viewed_artifacts = Artifact.objects.filter(id__in=[h['artifact_id'] for h in chat.history], embedding_vector__isnull=False)
             history_vecs = [a.embedding_vector for a in viewed_artifacts]
             if history_vecs:
                 query_vec = np.array(history_vecs, dtype=np.float32).mean(axis=0)
@@ -548,7 +597,7 @@ class ChatSimilarView(APIView):
             return Response({'error': '임베딩 벡터가 zero vector입니다.'}, status=status.HTTP_400_BAD_REQUEST)
         query_vec = query_vec / query_norm
 
-        viewed_ids = set(chat.history) | {artifact.id}
+        viewed_ids = {h['artifact_id'] for h in chat.history} | {artifact.id}
         candidates = [
             a for a in Artifact.objects.filter(embedding_vector__isnull=False)
             if a.id not in viewed_ids
@@ -613,7 +662,7 @@ class ChatShortestView(APIView):
 
         current_gallery = _gallery_number(current_location)
 
-        viewed_ids = set(chat.history) | {
+        viewed_ids = {h['artifact_id'] for h in chat.history} | {
             a.id for a in Artifact.objects.filter(cleveland_id=artifact_id)
         }
         candidates = list(Artifact.objects.exclude(id__in=viewed_ids).exclude(current_location=''))
@@ -842,7 +891,7 @@ class ChatRouteView(APIView):
 
         if raw_distance >= 50:
             # 히스토리 평균 벡터 계산
-            history_ids = list(chat.history)
+            history_ids = [h['artifact_id'] for h in chat.history]
             viewed_artifacts = Artifact.objects.filter(id__in=history_ids, embedding_vector__isnull=False)
             history_vecs = [a.embedding_vector for a in viewed_artifacts]
 
@@ -910,7 +959,7 @@ class ChatHistoryView(APIView):
         if err:
             return err
 
-        history_ids = list(chat.history)
+        history_ids = [h['artifact_id'] for h in chat.history]
         artifact_map = {
             a.id: a for a in Artifact.objects.filter(id__in=history_ids)
         }
