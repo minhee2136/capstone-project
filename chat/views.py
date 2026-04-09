@@ -270,16 +270,17 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
 
         # 안내 멘트 생성
         _FALLBACK_MESSAGE = "관심 키워드를 바탕으로 고른 작품들이에요. 하나를 선택하면 거기서부터 이어드릴게요."
-        title_list = ", ".join(a.title for _, a in top5)
+        top5_info = ", ".join(f"{a.title} ({a.type}, {a.department})" for _, a in top5)
         keywords_str = ", ".join(interest_keywords) if interest_keywords else (interest_tag or "")
-        if keywords_str and title_list:
+        if keywords_str and top5_info:
             prompt = (
                 f"사용자의 관심 키워드: {keywords_str}\n"
-                f"추천된 작품 5개: {title_list}\n\n"
-                "박물관 큐레이터처럼 자연스러운 한국어로 정확히 2문장만 작성해줘.\n"
-                "첫 문장: 관심사를 바탕으로 작품을 골랐다는 내용.\n"
-                "두 번째 문장: 하나를 선택하면 거기서부터 함께 감상한다는 내용.\n"
-                "작품명은 영어 원문 그대로 유지하고, 나머지는 반드시 한국어로만 써줘."
+                f"추천된 작품 5개 (제목, 분류, 부서): {top5_info}\n\n"
+                "박물관 큐레이터로서 아래 형식에 맞게 한국어로 작성해줘.\n"
+                "- 첫 문장: 사용자의 관심사가 왜 이 작품들과 어울리는지 자연스럽게 도입\n"
+                "- 중간 문장들: 5개 중 3개 작품을 골라, 각 작품이 관심사와 어떻게 연결되는지 흐름 있게 설명 (작품명은 영어 원문 그대로)\n"
+                "- 마지막 문장: 반드시 '유물에 관하여 더 궁금한 점이 있다면 언제든 물어봐주세요!'로 끝낼 것\n"
+                "전체 3~4문장, 자연스러운 말투로 작성해줘."
             )
             message = _groq_generate(prompt) or _FALLBACK_MESSAGE
         else:
