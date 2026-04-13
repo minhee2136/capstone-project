@@ -11,9 +11,8 @@ from .serializers import UserCreateSerializer, UserDetailSerializer
 class UserView(APIView):
 
     @swagger_auto_schema(
-        operation_description="POST /api/users/ — 사용자 생성",
-        request_body=UserCreateSerializer,
-        responses={201: "사용자 생성 성공"},
+        operation_summary="사용자 프로필 생성",
+    
     )
     def post(self, request):
         serializer = UserCreateSerializer(data=request.data)
@@ -35,11 +34,8 @@ class UserDetailView(APIView):
             return None
 
     @swagger_auto_schema(
-        operation_description="GET /api/users/{user_id}/ — 사용자 프로필 조회",
-        responses={
-            200: UserDetailSerializer,
-            404: '사용자 없음',
-        }
+        operation_summary="사용자 프로필 조회",
+        
     )
     def get(self, request, user_id):
         user = self.get_user(user_id)
@@ -48,13 +44,8 @@ class UserDetailView(APIView):
         return Response(UserDetailSerializer(user).data)
 
     @swagger_auto_schema(
-        operation_description="PUT /api/users/{user_id}/ — 사용자 프로필 수정 (수정할 필드만 전송)",
-        request_body=UserDetailSerializer,
-        responses={
-            200: UserDetailSerializer,
-            400: '잘못된 요청',
-            404: '사용자 없음',
-        }
+        operation_summary="사용자 프로필 수정",
+
     )
     def put(self, request, user_id):
         user = self.get_user(user_id)

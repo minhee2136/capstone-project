@@ -33,7 +33,6 @@ _KOREAN_SYSTEM_MSG = (
     "Every single word that is not an artwork title must be written in Korean Hangul."
 )
 
-# 허용 유니코드 범주: 한글(Hangul) + Latin(ASCII) + 공통 구두점·숫자
 _ALLOWED_SCRIPTS = {'Hangul', 'Latin', 'Common', 'Inherited'}
 
 
@@ -133,25 +132,10 @@ def _cosine_scores(query_vec, candidates):
     return scored
 
 
-# ── Chat 기반 API ──────────────────────────────────────────────────────────────
-
 class ChatCreateView(APIView):
 
     @swagger_auto_schema(
-        operation_description="POST /api/chats/ — 채팅 생성",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=['session_id'],
-            properties={'session_id': openapi.Schema(type=openapi.TYPE_INTEGER)},
-        ),
-        responses={201: openapi.Response('채팅 생성 성공', schema=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            properties={
-                'chat_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                'session_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                'created_at': openapi.Schema(type=openapi.TYPE_STRING),
-            },
-        ))},
+        operation_summary="채팅 생성",
     )
     def post(self, request):
         session = get_object_or_404(Session, id=request.data.get('session_id'))
@@ -169,18 +153,8 @@ class ChatCreateView(APIView):
 class ChatRecommendationsView(generics.RetrieveAPIView):
 
     @swagger_auto_schema(
-        operation_description="GET /api/chats/{chat_id}/recommendations/ — 유물 추천 (상위 5개)",
-        responses={
-            200: openapi.Response('추천 목록', schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    'chat_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'recommendations': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Schema(type=openapi.TYPE_OBJECT)),
-                },
-            )),
-            400: '임베딩 생성 불가',
-            404: '채팅 없음',
-        },
+        operation_summary="상위 5개 유물 추천",
+    
     )
     def get(self, request, *args, **kwargs):
         return self.retrieve(request, *args, **kwargs)
@@ -218,9 +192,7 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
         if not candidates:
             return Response({'chat_id': chat_id, 'recommendations': []})
 
-        # 쿼리 벡터 생성 (3가지 경우)
         if interest_keywords and interest_tag:
-            # 경우 3: 키워드 + 태그 둘 다 있을 때 → 각각 인코딩 후 평균
             keyword_text = " ".join(
                 KEYWORD_EMBEDDING_TEXT[k] for k in interest_keywords if k in KEYWORD_EMBEDDING_TEXT
             )
@@ -230,8 +202,8 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
                 query_vec = (kw_vec + tag_vec) / 2
             else:
                 query_vec = tag_vec
+
         elif interest_keywords:
-            # 경우 1: 키워드만 있을 때 → 키워드 영어 텍스트 합쳐서 임베딩
             keyword_text = " ".join(
                 KEYWORD_EMBEDDING_TEXT[k] for k in interest_keywords if k in KEYWORD_EMBEDDING_TEXT
             )
@@ -241,7 +213,7 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
                 vecs = np.array([a.embedding_vector for a in candidates], dtype=np.float32)
                 query_vec = vecs.mean(axis=0)
         elif interest_tag:
-            # 경우 2: 태그만 있을 때 → 태그 텍스트 그대로 임베딩
+            
             query_vec = embedding_model.encode(interest_tag).astype(np.float32)
         else:
             vecs = np.array([a.embedding_vector for a in candidates], dtype=np.float32)
@@ -268,7 +240,6 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
             for score, a in top5
         ]
 
-        # 안내 멘트 생성
         _FALLBACK_MESSAGE = "관심 키워드를 바탕으로 고른 작품들이에요. 하나를 선택하면 거기서부터 이어드릴게요."
         top5_info = ", ".join(f"{a.title} ({a.type}, {a.department})" for _, a in top5)
         keywords_str = ", ".join(interest_keywords) if interest_keywords else (interest_tag or "")
@@ -292,27 +263,8 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
 class ChatFeedbackView(generics.CreateAPIView):
 
     @swagger_auto_schema(
-        operation_description="POST /api/chats/{chat_id}/feedback/ — 유물 피드백 (1: 흥미로워요, -1: 별로예요)",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=['artifact_id', 'feedback'],
-            properties={
-                'artifact_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                'feedback': openapi.Schema(type=openapi.TYPE_INTEGER, description='1 또는 -1'),
-            },
-        ),
-        responses={
-            201: openapi.Response('피드백 저장 성공', schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    'chat_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'artifact_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'feedback': openapi.Schema(type=openapi.TYPE_INTEGER),
-                },
-            )),
-            400: '유효하지 않은 요청',
-            404: '채팅 없음',
-        },
+        operation_summary="사용자 피드백",
+        
     )
     def post(self, request, *args, **kwargs):
         return self.create(request, *args, **kwargs)
@@ -349,20 +301,8 @@ class ChatFeedbackView(generics.CreateAPIView):
 class ChatNextRecommendationView(generics.RetrieveAPIView):
 
     @swagger_auto_schema(
-        operation_description="GET /api/chats/{chat_id}/next-recommendation/ — 다음 유물 추천",
-        responses={
-            200: openapi.Response('다음 추천 유물', schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    'chat_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'artifact': openapi.Schema(type=openapi.TYPE_OBJECT),
-                    'conn_type': openapi.Schema(type=openapi.TYPE_STRING),
-                    'conn_message': openapi.Schema(type=openapi.TYPE_STRING),
-                },
-            )),
-            400: '히스토리 없음 또는 임베딩 없음',
-            404: '채팅 없음',
-        },
+        operation_summary="피드백 기반 다음 유물 추천",
+    
     )
     def get(self, request, *args, **kwargs):
         return self.retrieve(request, *args, **kwargs)
@@ -422,7 +362,6 @@ class ChatNextRecommendationView(generics.RetrieveAPIView):
                 scored.sort(key=lambda x: abs(_gallery_number(x[1].current_location) - session_gallery))
             chosen_score, chosen = scored[0]
 
-        # ── conn_message: Groq LLM 생성, 실패 시 템플릿 fallback ──────────
         prev_artifact = None
         if chat.history:
             last_entry = list(chat.history)[-1]
@@ -622,31 +561,10 @@ class ChatSimilarView(APIView):
 
 
 class ChatShortestView(APIView):
-    """GET /api/chats/{chat_id}/shortest/?artifact_id=1&current_location=102A — 짧은 경로로"""
 
     @swagger_auto_schema(
-        operation_description="GET /api/chats/{chat_id}/shortest/ — 현재 위치에서 가장 가까운 유물 조회",
-        manual_parameters=[
-            openapi.Parameter('artifact_id', openapi.IN_QUERY, required=True,
-                              description="기준 유물 cleveland_id", type=openapi.TYPE_INTEGER),
-            openapi.Parameter('current_location', openapi.IN_QUERY, required=True,
-                              description="현재 위치 (예: 102A)", type=openapi.TYPE_STRING),
-        ],
-        responses={
-            200: openapi.Response('가장 가까운 유물', schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    'artifact_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'title': openapi.Schema(type=openapi.TYPE_STRING),
-                    'type': openapi.Schema(type=openapi.TYPE_STRING),
-                    'current_location': openapi.Schema(type=openapi.TYPE_STRING),
-                    'image_url': openapi.Schema(type=openapi.TYPE_STRING),
-                    'distance': openapi.Schema(type=openapi.TYPE_STRING),
-                },
-            )),
-            400: '파라미터 누락',
-            404: '채팅 없음 또는 후보 없음',
-        },
+        operation_summary="최단 경로 조회",
+        
     )
     def get(self, request, chat_id):
         chat, err = _get_chat_or_404(chat_id)
@@ -699,10 +617,9 @@ class ChatShortestView(APIView):
 
 
 class ChatSummaryView(APIView):
-    """GET /api/chats/{chat_id}/summary/ — 관람 요약"""
 
     @swagger_auto_schema(
-        operation_description="GET /api/chats/{chat_id}/summary/ — 관람 요약 (통계 / 서사 / 후속 주제 / 스크립트)",
+        operation_description="관람 요약 (통계 / 서사 / 후속 주제 / 스크립트)",
         responses={
             200: openapi.Response('관람 요약', schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
@@ -724,7 +641,6 @@ class ChatSummaryView(APIView):
         if err:
             return err
 
-        # ── 1. 방문 유물 목록 (순서 보존) ────────────────────────────────
         history_entries = list(chat.history)  # [{'artifact_id': ..., 'conn_type': ..., 'conn_message': ...}, ...]
         history_ids = [entry['artifact_id'] for entry in history_entries if isinstance(entry, dict)]
         artifact_map = {
@@ -732,7 +648,6 @@ class ChatSummaryView(APIView):
         }
         artifacts = [artifact_map[aid] for aid in history_ids if aid in artifact_map]
 
-        # ── 2. 통계 ───────────────────────────────────────────────────────
         feedback_history = list(chat.feedback_history)
         liked = feedback_history.count(1)
         disliked = feedback_history.count(-1)
@@ -752,13 +667,11 @@ class ChatSummaryView(APIView):
                 'script': [],
             })
 
-        # ── 3. 관람 서사 — 방문 유물의 keyword 시퀀스 기반 ───────────────
         keywords_seen = []
         for a in artifacts:
             if a.keyword and a.keyword not in keywords_seen:
                 keywords_seen.append(a.keyword)
 
-        # narrative: Groq LLM 생성, 실패 시 템플릿 fallback
         artifact_sequence = " → ".join(f"{a.title} ({a.type})" for a in artifacts)
         narrative_prompt = (
             f"관람한 유물 목록 (순서대로):\n{artifact_sequence}\n\n"
@@ -775,7 +688,6 @@ class ChatSummaryView(APIView):
 
         narrative = _groq_generate(narrative_prompt) or fallback_narrative
 
-        # ── 4. 후속 주제 추천 — 히스토리 평균 벡터 vs 미방문 키워드 ──────
         history_vecs = [
             a.embedding_vector for a in artifacts if a.embedding_vector
         ]
@@ -788,7 +700,7 @@ class ChatSummaryView(APIView):
                 query_vec = query_vec / query_norm
                 viewed_ids = set(history_ids)
 
-                # 키워드별 대표 벡터(평균) 계산
+        
                 keyword_vecs: dict[str, list] = {}
                 for a in Artifact.objects.filter(embedding_vector__isnull=False).exclude(id__in=viewed_ids).exclude(keyword=''):
                     keyword_vecs.setdefault(a.keyword, []).append(a.embedding_vector)
@@ -807,7 +719,6 @@ class ChatSummaryView(APIView):
                 keyword_scores.sort(key=lambda x: x[0], reverse=True)
                 next_themes = [kw for _, kw in keyword_scores[:2]]
 
-        # ── 5. 스크립트 — history에 저장된 conn_type/conn_message 사용 ──
         entry_map = {
             entry['artifact_id']: entry
             for entry in history_entries if isinstance(entry, dict)
@@ -833,7 +744,6 @@ class ChatSummaryView(APIView):
 
 
 class ChatRouteView(APIView):
-    """GET /api/chats/{chat_id}/route/?current_location=102A&artifact_id=1 — 경로 안내"""
 
     @swagger_auto_schema(
         operation_description="GET /api/chats/{chat_id}/route/ — 현재 위치에서 목적지 유물까지 경로 안내",
@@ -872,7 +782,6 @@ class ChatRouteView(APIView):
 
         destination = get_object_or_404(Artifact, cleveland_id=artifact_id)
 
-        # ── 거리 계산 ─────────────────────────────────────────────────────
         # TODO: 팀원 최적화 모델 연동 — 현재는 갤러리 번호 앞 숫자 차이로 임시 계산
         src_gallery = _gallery_number(current_location)
         dst_gallery = _gallery_number(destination.current_location)
@@ -887,11 +796,10 @@ class ChatRouteView(APIView):
         else:
             estimated_distance = "먼 거리"
 
-        # ── 경유 유물 생성 (거리 임계값 50 이상) ─────────────────────────
         waypoints = []
 
         if raw_distance >= 50:
-            # 히스토리 평균 벡터 계산
+
             history_ids = [h['artifact_id'] for h in chat.history]
             viewed_artifacts = Artifact.objects.filter(id__in=history_ids, embedding_vector__isnull=False)
             history_vecs = [a.embedding_vector for a in viewed_artifacts]
@@ -939,7 +847,6 @@ class ChatRouteView(APIView):
 
 
 class ChatHistoryView(APIView):
-    """GET /api/chats/{chat_id}/history/ — 관람 타임라인"""
 
     @swagger_auto_schema(
         operation_description="GET /api/chats/{chat_id}/history/ — 방문 유물 목록 순서대로 반환",
@@ -980,20 +887,10 @@ class ChatHistoryView(APIView):
 
 
 class ChatShareView(APIView):
-    """POST /api/chats/{chat_id}/share/ — 여정 공유 URL 생성"""
 
     @swagger_auto_schema(
-        operation_description="POST /api/chats/{chat_id}/share/ — 고유 공유 URL 생성 (이미 있으면 기존 URL 반환)",
-        responses={
-            200: openapi.Response('공유 URL', schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    'chat_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'share_url': openapi.Schema(type=openapi.TYPE_STRING),
-                },
-            )),
-            404: '채팅 없음',
-        },
+        operation_description="공유 url 생성",
+        
     )
     def post(self, request, chat_id):
         import uuid
