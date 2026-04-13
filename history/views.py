@@ -14,21 +14,7 @@ from .serializers import ViewHistoryCreateSerializer, ViewHistorySerializer
 class ViewHistoryView(APIView):
 
     @swagger_auto_schema(
-        operation_description="POST /api/sessions/{session_id}/history — 관람 기록 저장",
-        request_body=ViewHistoryCreateSerializer,
-        responses={
-            201: openapi.Response('관람 기록 저장 성공', schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    'id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'session_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'artifact_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'visited_at': openapi.Schema(type=openapi.TYPE_STRING),
-                }
-            )),
-            400: '잘못된 요청',
-            404: '세션 또는 유물 없음',
-        }
+        operation_summary="관람 기록 저장",
     )
     def post(self, request, session_id):
         try:
@@ -48,7 +34,6 @@ class ViewHistoryView(APIView):
 
         record = ViewHistory.objects.create(session=session, artifact=artifact)
 
-        # 히스토리 저장 후 세션 임베딩 자동 갱신
         viewed_artifact_ids = ViewHistory.objects.filter(
             session_id=session_id,
         ).values_list('artifact_id', flat=True)
@@ -70,11 +55,7 @@ class ViewHistoryView(APIView):
         }, status=status.HTTP_201_CREATED)
 
     @swagger_auto_schema(
-        operation_description="GET /api/sessions/{session_id}/history — 관람 기록 목록 조회",
-        responses={
-            200: ViewHistorySerializer(many=True),
-            404: '세션 없음',
-        }
+        operation_summary="관람기록 목록 조회",
     )
     def get(self, request, session_id):
         try:

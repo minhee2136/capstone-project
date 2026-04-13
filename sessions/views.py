@@ -24,9 +24,7 @@ def _get_view_history(session_id):
 class SessionView(APIView):
 
     @swagger_auto_schema(
-        operation_description="POST /api/sessions/ — 온보딩 세션 생성",
-        request_body=OnboardingSessionCreateSerializer,
-        responses={201: "세션 생성 성공"},
+        operation_summary="세션 생성",
     )
     def post(self, request):
         serializer = OnboardingSessionCreateSerializer(data=request.data)
@@ -50,22 +48,7 @@ class SessionView(APIView):
 class SessionDetailView(APIView):
 
     @swagger_auto_schema(
-        operation_description="GET /api/sessions/{session_id}/ — 세션 조회 (context 포함)",
-        responses={
-            200: openapi.Response('세션 조회 성공', schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    'session_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'user_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'interest_tags': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Schema(type=openapi.TYPE_STRING)),
-                    'knowledge_level': openapi.Schema(type=openapi.TYPE_STRING),
-                    'view_time': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'artifact_count': openapi.Schema(type=openapi.TYPE_INTEGER),
-                    'context_summary': openapi.Schema(type=openapi.TYPE_STRING),
-                }
-            )),
-            404: '세션 없음',
-        }
+        operation_summary= "새션 조회",
     )
     def get(self, request, session_id):
         try:
@@ -100,29 +83,8 @@ class SessionDetailView(APIView):
 class SessionHistorySummaryView(APIView):
 
     @swagger_auto_schema(
-        operation_description="GET /api/sessions/{session_id}/history-summary/ — 챗봇 추천 유물 요약 (관람 수, 관심 주제, 유물 카드 목록)",
-        responses={
-            200: openapi.Response('히스토리 요약', schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    'artifact_count': openapi.Schema(type=openapi.TYPE_INTEGER, description='지금까지 본 유물 수'),
-                    'interest_topics': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Schema(type=openapi.TYPE_STRING), description='현재 관심 주제'),
-                    'artifacts': openapi.Schema(
-                        type=openapi.TYPE_ARRAY,
-                        items=openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                'artifact_id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                                'title': openapi.Schema(type=openapi.TYPE_STRING),
-                                'image_url': openapi.Schema(type=openapi.TYPE_STRING),
-                            }
-                        ),
-                        description='관람 완료 유물 카드 목록'
-                    ),
-                }
-            )),
-            404: '세션 없음',
-        }
+        operation_summary="관람 유물 히스토리 목록",
+        
     )
     def get(self, request, session_id):
         try:
@@ -130,7 +92,6 @@ class SessionHistorySummaryView(APIView):
         except Session.DoesNotExist:
             return Response({'error': '세션을 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
 
-        # 챗봇이 추천한 artifact_id 목록 (중복 제거, 추천 순서 유지)
         messages = Message.objects.filter(
             session=session,
             role=Message.Role.ASSISTANT,
@@ -143,8 +104,7 @@ class SessionHistorySummaryView(APIView):
             if msg.artifact_id not in seen:
                 seen.add(msg.artifact_id)
                 recommended_ids.append(msg.artifact_id)
-
-        # 유물 정보 조회
+                
         artifact_map = {
             a.cleveland_id: a
             for a in Artifact.objects.filter(cleveland_id__in=recommended_ids)
