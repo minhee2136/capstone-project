@@ -10,6 +10,8 @@ from sentence_transformers import SentenceTransformer
 from .models import Session
 from .serializers import SessionCreateSerializer, OnboardingSessionCreateSerializer
 from history.models import ViewHistory
+from chat.models import Message
+from artifacts.models import Artifact
 
 gpt_client = OpenAI(api_key=settings.OPENAI_API_KEY)
 embedding_model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
@@ -93,3 +95,73 @@ class SessionDetailView(APIView):
             data['context_summary'] = ''
 
         return Response(data)
+
+
+class SessionHistorySummaryView(APIView):
+
+    @swagger_auto_schema(
+        operation_description="GET /api/sessions/{session_id}/history-summary/ — 챗봇 추천 유물 요약 (관람 수, 관심 주제, 유물 카드 목록)",
+        responses={
+            200: openapi.Response('히스토리 요약', schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'artifact_count': openapi.Schema(type=openapi.TYPE_INTEGER, description='지금까지 본 유물 수'),
+                    'interest_topics': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Schema(type=openapi.TYPE_STRING), description='현재 관심 주제'),
+                    'artifacts': openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                'artifact_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                                'title': openapi.Schema(type=openapi.TYPE_STRING),
+                                'image_url': openapi.Schema(type=openapi.TYPE_STRING),
+                            }
+                        ),
+                        description='관람 완료 유물 카드 목록'
+                    ),
+                }
+            )),
+            404: '세션 없음',
+        }
+    )
+    def get(self, request, session_id):
+        try:
+            session = Session.objects.get(id=session_id)
+        except Session.DoesNotExist:
+            return Response({'error': '세션을 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
+
+        # 챗봇이 추천한 artifact_id 목록 (중복 제거, 추천 순서 유지)
+        messages = Message.objects.filter(
+            session=session,
+            role=Message.Role.ASSISTANT,
+            artifact_id__isnull=False,
+        ).order_by('created_at')
+
+        seen = set()
+        recommended_ids = []
+        for msg in messages:
+            if msg.artifact_id not in seen:
+                seen.add(msg.artifact_id)
+                recommended_ids.append(msg.artifact_id)
+
+        # 유물 정보 조회
+        artifact_map = {
+            a.cleveland_id: a
+            for a in Artifact.objects.filter(cleveland_id__in=recommended_ids)
+        }
+
+        artifacts = []
+        for aid in recommended_ids:
+            a = artifact_map.get(aid)
+            if a:
+                artifacts.append({
+                    'artifact_id': a.cleveland_id,
+                    'title': a.title,
+                    'image_url': a.image_url,
+                })
+
+        return Response({
+            'artifact_count': len(artifacts),
+            'interest_topics': session.interest_tags or [],
+            'artifacts': artifacts,
+        })
