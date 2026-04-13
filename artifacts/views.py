@@ -62,6 +62,74 @@ class ArtifactDetailView(generics.RetrieveAPIView):
         return self.retrieve(request, *args, **kwargs)
 
 
+class ArtifactRecentView(APIView):
+
+    @swagger_auto_schema(
+        operation_description="GET /api/artifacts/{artifact_id}/recent-artifact/ — 최근 본 유물 최대 3개 (현재 유물 제외, ?session_id 필수)",
+        manual_parameters=[
+            openapi.Parameter('session_id', openapi.IN_QUERY, type=openapi.TYPE_INTEGER, required=True),
+        ],
+        responses={
+            200: openapi.Response('최근 본 유물 목록', schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'recent': openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                'artifact_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                                'title': openapi.Schema(type=openapi.TYPE_STRING),
+                                'image_url': openapi.Schema(type=openapi.TYPE_STRING),
+                            }
+                        )
+                    )
+                }
+            )),
+            400: 'session_id 누락',
+            404: '세션 없음',
+        }
+    )
+    def get(self, request, artifact_id):
+        from chat.models import Message
+        from sessions.models import Session
+
+        session_id = request.query_params.get('session_id')
+        if not session_id:
+            return Response({'error': 'session_id가 필요합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            session = Session.objects.get(id=session_id)
+        except Session.DoesNotExist:
+            return Response({'error': '세션을 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
+
+        # 챗봇이 추천한 메시지에서 artifact_id 추출 (최신순, 현재 유물 제외)
+        messages = Message.objects.filter(
+            session=session,
+            role=Message.Role.ASSISTANT,
+            artifact_id__isnull=False,
+        ).exclude(artifact_id=artifact_id).order_by('-created_at')
+
+        seen = set()
+        recent = []
+        for msg in messages:
+            if msg.artifact_id not in seen:
+                seen.add(msg.artifact_id)
+                try:
+                    artifact = Artifact.objects.get(cleveland_id=msg.artifact_id)
+                except Artifact.DoesNotExist:
+                    continue
+                recent.append({
+                    'artifact_id': artifact.cleveland_id,
+                    'title': artifact.title,
+                    'image_url': artifact.image_url,
+                })
+            if len(recent) == 3:
+                break
+
+        return Response({'recent': recent})
+
+
 class ArtifactRelatedView(APIView):
 
     @swagger_auto_schema(
