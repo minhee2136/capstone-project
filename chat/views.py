@@ -136,9 +136,19 @@ class ChatCreateView(APIView):
 
     @swagger_auto_schema(
         operation_summary="채팅 생성",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=['session_id'],
+            properties={
+                'session_id': openapi.Schema(type=openapi.TYPE_INTEGER, description='세션 ID'),
+            },
+        ),
     )
     def post(self, request):
-        session = get_object_or_404(Session, id=request.data.get('session_id'))
+        session_id = request.data.get('session_id')
+        if not session_id:
+            return Response({'detail': 'session_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        session = get_object_or_404(Session, id=session_id)
         chat, created = Chat.objects.get_or_create(session=session)
         return Response(
             {
