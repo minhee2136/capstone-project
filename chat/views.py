@@ -250,7 +250,7 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
             for score, a in top5
         ]
 
-        _FALLBACK_MESSAGE = "관심 키워드를 바탕으로 고른 작품들이에요. 하나를 선택하면 거기서부터 이어드릴게요."
+        _FALLBACK_MESSAGE = "안녕하세요! 저는 Hufscent 큐레이터입니다. 박물관 관람에 대해 무엇이든 물어보세요!"
         top5_info = ", ".join(f"{a.title} ({a.type}, {a.department})" for _, a in top5)
         keywords_str = ", ".join(interest_keywords) if interest_keywords else (interest_tag or "")
         if keywords_str and top5_info:
@@ -260,7 +260,7 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
                 "박물관 큐레이터로서 아래 형식에 맞게 한국어로 작성해줘.\n"
                 "- 첫 문장: 사용자의 관심사가 왜 이 작품들과 어울리는지 자연스럽게 도입\n"
                 "- 중간 문장들: 5개 중 3개 작품을 골라, 각 작품이 관심사와 어떻게 연결되는지 흐름 있게 설명 (작품명은 영어 원문 그대로)\n"
-                "- 마지막 문장: 반드시 '유물에 관하여 더git  궁금한 점이 있다면 언제든 물어봐주세요!'로 끝낼 것\n"
+                "- 마지막 문장: 반드시 '유물에 관하여 더 궁금한 점이 있다면 언제든 물어봐주세요!'로 끝낼 것\n"
                 "전체 3~4문장, 자연스러운 말투로 작성해줘."
             )
             message = _groq_generate(prompt) or _FALLBACK_MESSAGE
@@ -274,7 +274,14 @@ class ChatFeedbackView(generics.CreateAPIView):
 
     @swagger_auto_schema(
         operation_summary="사용자 피드백",
-        
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=['artifact_id', 'feedback'],
+            properties={
+                'artifact_id': openapi.Schema(type=openapi.TYPE_INTEGER, description='유물 ID (cleveland_id)'),
+                'feedback': openapi.Schema(type=openapi.TYPE_INTEGER, description='좋아요: 1, 싫어요: -1', enum=[1, -1]),
+            },
+        ),
     )
     def post(self, request, *args, **kwargs):
         return self.create(request, *args, **kwargs)
@@ -288,6 +295,14 @@ class ChatFeedbackView(generics.CreateAPIView):
         artifact_id = request.data.get('artifact_id')
         feedback_int = request.data.get('feedback')
 
+        if artifact_id is None:
+            return Response({'error': 'artifact_id는 필수입니다.'}, status=status.HTTP_400_BAD_REQUEST)
+        if feedback_int is None:
+            return Response({'error': 'feedback은 필수입니다.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            feedback_int = int(feedback_int)
+        except (ValueError, TypeError):
+            return Response({'error': 'feedback은 1 또는 -1이어야 합니다.'}, status=status.HTTP_400_BAD_REQUEST)
         if feedback_int not in (1, -1):
             return Response({'error': 'feedback은 1 또는 -1이어야 합니다.'}, status=status.HTTP_400_BAD_REQUEST)
         if not Artifact.objects.filter(cleveland_id=artifact_id).exists():
