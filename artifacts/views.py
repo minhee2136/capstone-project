@@ -58,7 +58,6 @@ class ArtifactRecentView(APIView):
         except Session.DoesNotExist:
             return Response({'error': '세션을 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
 
-        # 챗봇이 추천한 메시지에서 artifact_id 추출 (최신순, 현재 유물 제외)
         messages = Message.objects.filter(
             session=session,
             role=Message.Role.ASSISTANT,
