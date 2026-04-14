@@ -24,7 +24,6 @@ def apply_fields(artifact, api_data):
     artifact.is_active = (api_data.get('share_license_status') == 'CC0')
     artifact.title = s(api_data.get('title'))
     artifact.tombstone = clean_html(s(api_data.get('tombstone')))
-    artifact.creation_date = s(api_data.get('creation_date'))
     artifact.creation_date_earliest = api_data.get('creation_date_earliest')
     artifact.creation_date_latest = api_data.get('creation_date_latest')
     artifact.culture = api_data.get('culture') or []
@@ -35,11 +34,11 @@ def apply_fields(artifact, api_data):
     artifact.current_location = s(api_data.get('current_location'))
     artifact.measurements = s(api_data.get('measurements'))
     artifact.description = clean_html(s(api_data.get('description')))
-    artifact.did_you_know = clean_html(s(api_data.get('did_you_know')))
     artifact.image_url = s(web.get('url'))
     artifact.updated_at = s(api_data.get('updated_at'))
     artifact.embedding_text = ' '.join(filter(None, [
         artifact.title,
+        artifact.type,
         ', '.join(artifact.culture) if isinstance(artifact.culture, list) else str(artifact.culture),
         artifact.technique,
         artifact.department,

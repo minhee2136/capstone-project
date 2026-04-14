@@ -38,7 +38,8 @@ class Command(BaseCommand):
         overwrite = options["overwrite"]
 
         qs = Artifact.objects.all() if overwrite else Artifact.objects.filter(keyword="")
-        total = qs.count()
+        id_list = list(qs.values_list("id", flat=True))
+        total = len(id_list)
 
         if total == 0:
             self.stdout.write("태깅 대상 없음.")
@@ -51,7 +52,8 @@ class Command(BaseCommand):
         offset = 0
 
         while offset < total:
-            batch = list(qs.values("id", "type", "department")[offset: offset + batch_size])
+            batch_ids = id_list[offset: offset + batch_size]
+            batch = list(Artifact.objects.filter(id__in=batch_ids).values("id", "type", "department"))
             if not batch:
                 break
 
