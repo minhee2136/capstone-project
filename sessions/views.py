@@ -68,26 +68,23 @@ class SessionHistorySummaryView(APIView):
         except Session.DoesNotExist:
             return Response({'error': '세션을 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
 
-        messages = Message.objects.filter(
-            session=session,
-            role=Message.Role.ASSISTANT,
-            artifact_id__isnull=False,
-        ).order_by('created_at')
-
+        # 세션에 연결된 모든 채팅의 히스토리(방문 기록)를 취합
         seen = set()
-        recommended_ids = []
-        for msg in messages:
-            if msg.artifact_id not in seen:
-                seen.add(msg.artifact_id)
-                recommended_ids.append(msg.artifact_id)
+        visited_ids = []
+        for chat in session.chats.all():
+            for h in chat.history:
+                aid = h.get('artifact_id') if isinstance(h, dict) else h
+                if aid and aid not in seen:
+                    seen.add(aid)
+                    visited_ids.append(aid)
 
         artifact_map = {
-            a.cleveland_id: a
-            for a in Artifact.objects.filter(cleveland_id__in=recommended_ids)
+            a.id: a
+            for a in Artifact.objects.filter(id__in=visited_ids)
         }
 
         artifacts = []
-        for aid in recommended_ids:
+        for aid in visited_ids:
             a = artifact_map.get(aid)
             if a:
                 artifacts.append({

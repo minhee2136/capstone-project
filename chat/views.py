@@ -6,7 +6,7 @@ import numpy as np
 from django.db.models import Q
 
 logger = logging.getLogger(__name__)
-from rest_framework import generics, status
+from rest_framework import generics, status, serializers
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.generics import get_object_or_404
@@ -161,6 +161,7 @@ class ChatCreateView(APIView):
 
 
 class ChatRecommendationsView(generics.RetrieveAPIView):
+    serializer_class = serializers.Serializer
 
     @swagger_auto_schema(
         operation_summary="상위 5개 유물 추천",
@@ -196,8 +197,19 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
         print(f"[DEBUG] 후보 유물 수: {candidate_qs.count()}")
         print(f"[DEBUG] 임베딩 있는 유물 수: {candidate_qs.exclude(embedding_vector=None).count()}")
 
-        viewed_ids = {h['artifact_id'] for h in chat.history}
-        candidates = [a for a in candidate_qs if a.id not in viewed_ids]
+        viewed_ids = set()
+        for h in chat.history:
+            if isinstance(h, dict):
+                viewed_ids.add(h.get('artifact_id', h))
+            else:
+                viewed_ids.add(h)
+
+        # 중복 방지를 위해 cleveland_id 기준 필터링
+        unique_candidates = {}
+        for a in candidate_qs:
+            if a.id not in viewed_ids and a.cleveland_id not in unique_candidates:
+                unique_candidates[a.cleveland_id] = a
+        candidates = list(unique_candidates.values())
 
         if not candidates:
             return Response({'chat_id': chat_id, 'recommendations': []})
@@ -245,6 +257,7 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
                 'type': a.type,
                 'current_location': a.current_location,
                 'image_url': a.image_url,
+                'description': a.description,
                 'similarity_score': round(score, 4),
             }
             for score, a in top5
@@ -270,7 +283,59 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
         return Response({'chat_id': chat_id, 'message': message, 'recommendations': recommendations})
 
 
+class ChatVisitView(APIView):
+    @swagger_auto_schema(
+        operation_summary="유물 선택(관람) 및 히스토리 저장",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'artifact_id': openapi.Schema(type=openapi.TYPE_INTEGER, description="선택한 유물 cleveland_id"),
+            },
+            required=['artifact_id']
+        ),
+        responses={200: "성공"}
+    )
+    def post(self, request, chat_id):
+        chat, err = _get_chat_or_404(chat_id)
+        if err:
+            return err
+
+        artifact_id = request.data.get('artifact_id')
+        if not artifact_id:
+            return Response({'error': 'artifact_id가 필요합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            artifact = Artifact.objects.get(cleveland_id=artifact_id)
+        except Artifact.DoesNotExist:
+            return Response({'error': '존재하지 않는 유물입니다.'}, status=status.HTTP_404_NOT_FOUND)
+
+        history = list(chat.history)
+        
+        existing_ids = []
+        for h in history:
+            if isinstance(h, dict):
+                existing_ids.append(h.get('artifact_id'))
+            else:
+                existing_ids.append(h)
+
+        if artifact.id not in existing_ids:
+            history.append({
+                'artifact_id': artifact.id,
+                'conn_type': 'story',
+                'conn_message': '사용자가 직접 선택한 유물입니다.'
+            })
+            chat.history = history
+            chat.save(update_fields=['history'])
+
+        return Response({
+            'message': '히스토리에 저장되었습니다.',
+            'chat_id': chat_id,
+            'artifact_id': artifact.cleveland_id
+        }, status=status.HTTP_200_OK)
+
+
 class ChatFeedbackView(generics.CreateAPIView):
+    serializer_class = serializers.Serializer
 
     @swagger_auto_schema(
         operation_summary="사용자 피드백",
@@ -324,6 +389,7 @@ class ChatFeedbackView(generics.CreateAPIView):
 
 
 class ChatNextRecommendationView(generics.RetrieveAPIView):
+    serializer_class = serializers.Serializer
 
     @swagger_auto_schema(
         operation_summary="피드백 기반 다음 유물 추천",
@@ -782,10 +848,19 @@ class ChatRouteView(APIView):
             200: openapi.Response('경로 안내', schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
-                    'destination': openapi.Schema(type=openapi.TYPE_OBJECT),
-                    'waypoints': openapi.Schema(type=openapi.TYPE_ARRAY,
-                                                items=openapi.Schema(type=openapi.TYPE_OBJECT)),
-                    'estimated_distance': openapi.Schema(type=openapi.TYPE_STRING),
+                    'destination': openapi.Schema(type=openapi.TYPE_STRING, description="목적지 이름"),
+                    'floor': openapi.Schema(type=openapi.TYPE_STRING, description="층수 (예: '1층', '2층', '지하')"),
+                    'steps': openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                'direction': openapi.Schema(type=openapi.TYPE_STRING, description="방향 (예: 우측, 좌측)"),
+                                'distance': openapi.Schema(type=openapi.TYPE_STRING, description="이동 거리"),
+                                'instruction': openapi.Schema(type=openapi.TYPE_STRING, description="상세 안내 메시지"),
+                            }
+                        )
+                    )
                 },
             )),
             400: '파라미터 누락',
@@ -859,15 +934,36 @@ class ChatRouteView(APIView):
                             'conn_message': CONN_MESSAGES['shock'],
                         })
 
+        floor = "1층"
+        if dst_gallery >= 200:
+            floor = "2층"
+        elif dst_gallery < 100 and dst_gallery > 0:
+            floor = "지하"
+
+        steps = []
+        if waypoints:
+            for i, wp in enumerate(waypoints):
+                steps.append({
+                    "direction": "경유지 방면",
+                    "distance": "약 30m",
+                    "instruction": f"{wp['title']}로 이동"
+                })
+            steps.append({
+                "direction": "목적지 도착",
+                "distance": "약 20m",
+                "instruction": f"{destination.title}에 도착"
+            })
+        else:
+            steps.append({
+                "direction": "직진",
+                "distance": f"약 {raw_distance * 10}m",
+                "instruction": f"{destination.title}를 향해 이동"
+            })
+
         return Response({
-            'destination': {
-                'artifact_id': destination.cleveland_id,
-                'title': destination.title,
-                'current_location': destination.current_location,
-                'image_url': destination.image_url,
-            },
-            'waypoints': waypoints,
-            'estimated_distance': estimated_distance,
+            'destination': destination.title,
+            'floor': floor,
+            'steps': steps,
         })
 
 
@@ -880,6 +976,8 @@ class ChatHistoryView(APIView):
                 type=openapi.TYPE_OBJECT,
                 properties={
                     'chat_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'history': openapi.Schema(type=openapi.TYPE_ARRAY,
+                                              items=openapi.Schema(type=openapi.TYPE_OBJECT)),
                     'artifacts': openapi.Schema(type=openapi.TYPE_ARRAY,
                                                 items=openapi.Schema(type=openapi.TYPE_OBJECT)),
                 },
@@ -892,13 +990,20 @@ class ChatHistoryView(APIView):
         if err:
             return err
 
-        history_ids = [h['artifact_id'] for h in chat.history]
+        history_ids = []
+        for h in chat.history:
+            if isinstance(h, dict):
+                history_ids.append(h.get('artifact_id', h))
+            else:
+                history_ids.append(h)
+
         artifact_map = {
             a.id: a for a in Artifact.objects.filter(id__in=history_ids)
         }
 
         artifacts = [
             {
+                'id': artifact_map[aid].id,
                 'artifact_id': artifact_map[aid].cleveland_id,
                 'title': artifact_map[aid].title,
                 'type': artifact_map[aid].type,
@@ -908,7 +1013,11 @@ class ChatHistoryView(APIView):
             for aid in history_ids if aid in artifact_map
         ]
 
-        return Response({'chat_id': chat_id, 'artifacts': artifacts})
+        return Response({
+            'chat_id': chat_id,
+            'history': artifacts,  # 프론트엔드 명세에 맞춤
+            'artifacts': artifacts
+        })
 
 
 class ChatShareView(APIView):
@@ -931,3 +1040,107 @@ class ChatShareView(APIView):
         share_url = f"{base_url}/shared/{chat.share_token}/"
 
         return Response({'chat_id': chat_id, 'share_url': share_url})
+
+class ChatTalkView(APIView):
+    @swagger_auto_schema(
+        operation_summary="자유 대화 (프리토킹)",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'message': openapi.Schema(type=openapi.TYPE_STRING, description="사용자 입력 메시지")
+            },
+            required=['message']
+        )
+    )
+    def post(self, request, chat_id):
+        import json
+        chat, err = _get_chat_or_404(chat_id)
+        if err:
+            return err
+            
+        user_message = request.data.get('message', '').strip()
+        if not user_message:
+            return Response({'error': '메시지를 입력해주세요.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        # 사용자 메시지 저장
+        Message.objects.create(
+            session=chat.session,
+            role=Message.Role.USER,
+            content=user_message,
+        )
+
+        # 쿼리 벡터 계산 및 상위 3개 유물 후보 색인
+        candidate_list = []
+        try:
+            query_vec = embedding_model.encode(user_message).astype(np.float32)
+            candidates = Artifact.objects.filter(is_active=True).exclude(embedding_vector__isnull=True)
+            scored = _cosine_scores(query_vec, candidates)
+            candidate_list = [
+                {
+                    "cleveland_id": a.cleveland_id,
+                    "title": a.title,
+                    "image_url": a.image_url
+                }
+                for _, a in scored[:3]
+            ]
+        except Exception as e:
+            logger.error(f"RAG 검색 오류: {e}")
+        
+        # 최근 메시지 가져오기 (대화 맥락 유지를 위해 최근 5개 정도 텍스트화)
+        recent_messages = Message.objects.filter(session=chat.session).order_by('-created_at')[:6]
+        recent_messages = list(reversed(recent_messages))
+        
+        context_lines = []
+        for msg in recent_messages:
+            role_kr = "사용자" if msg.role == 'user' else "큐레이터"
+            context_lines.append(f"{role_kr}: {msg.content}")
+        context_str = "\n".join(context_lines)
+            
+        # Groq Prompt 작성
+        prompt = (
+            f"이전 대화 맥락:\n{context_str}\n\n"
+            f"방금 사용자가 한 말: \"{user_message}\"\n\n"
+            f"당신은 친절한 박물관 큐레이터입니다. 이전 대화 맥락에 이어 사용자의 말에 응답해주세요.\n"
+            f"만약 사용자가 유물을 추천해 달라고 하거나, 맥락상 유물 추천이 자연스럽다면 다음 [후보 유물] 목록에 있는 유물 정보를 참고해 추천 멘트와 데이터를 제공해주세요.\n"
+            f"[후보 유물]: {candidate_list}\n\n"
+            f"반응은 무조건 아래 형태의 JSON 형식으로만 작성하세요. 부가적인 텍스트나 마크다운 기호를 포함하지 마세요.\n"
+            f"{{\n"
+            f'  "assistant_response": "사용자에게 건넬 큐레이터의 친절한 대답",\n'
+            f'  "recommendations": [추천할 유물 객체 배열. 없으면 빈 배열 []]\n'
+            f"}}"
+        )
+        
+        raw_response = _groq_generate(prompt)
+        assistant_response = "죄송합니다. 현재 큐레이터가 답변할 수 없습니다."
+        recommendations = []
+        
+        if raw_response:
+            clean_resp = raw_response.strip()
+            if clean_resp.startswith("```json"):
+                clean_resp = clean_resp[7:]
+            elif clean_resp.startswith("```"):
+                clean_resp = clean_resp[3:]
+            if clean_resp.endswith("```"):
+                clean_resp = clean_resp[:-3]
+            clean_resp = clean_resp.strip()
+            
+            try:
+                data = json.loads(clean_resp)
+                assistant_response = data.get("assistant_response", "")
+                recommendations = data.get("recommendations", [])
+            except json.JSONDecodeError:
+                assistant_response = clean_resp
+            
+        # 큐레이터 응답 저장
+        Message.objects.create(
+            session=chat.session,
+            role=Message.Role.ASSISTANT,
+            content=assistant_response,
+        )
+        
+        return Response({
+            'chat_id': chat_id,
+            'user_message': user_message,
+            'assistant_response': assistant_response,
+            'recommendations': recommendations
+        })

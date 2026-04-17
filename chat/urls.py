@@ -13,4 +13,6 @@ urlpatterns = [
     path('chats/<int:chat_id>/route/', views.ChatRouteView.as_view(), name='chat-route'),
     path('chats/<int:chat_id>/history/', views.ChatHistoryView.as_view(), name='chat-history'),
     path('chats/<int:chat_id>/share/', views.ChatShareView.as_view(), name='chat-share'),
+    path('chats/<int:chat_id>/talk/', views.ChatTalkView.as_view(), name='chat-talk'),
+    path('chats/<int:chat_id>/visit/', views.ChatVisitView.as_view(), name='chat-visit'),
 ]
