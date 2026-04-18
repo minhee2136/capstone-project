@@ -77,7 +77,10 @@ class ArtifactAiDescriptionView(APIView):
         try:
             completion = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": "당신은 한국어만 사용하는 박물관 큐레이터입니다. 절대로 영어 등 외국어를 출력하지 말고 모든 유물 정보를 자연스럽게 한국어로 번역/음차하세요."},
+                    {"role": "user", "content": prompt}
+                ],
                 temperature=0.7,
                 max_tokens=500,
             )

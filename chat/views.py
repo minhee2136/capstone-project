@@ -28,12 +28,12 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 _KOREAN_SYSTEM_MSG = (
     "You are a Korean museum curator assistant. "
     "Always respond in Korean only. "
-    "Never use Chinese characters, Japanese characters, Cyrillic, or any script other than Korean Hangul and Latin. "
-    "Artwork titles must stay in their original English (Latin) form. "
-    "Every single word that is not an artwork title must be written in Korean Hangul."
+    "Never use Chinese characters, Japanese characters, Cyrillic, or any script other than Korean Hangul and basic punctuation. "
+    "Even artwork titles, person names, and locations MUST be smoothly translated or transliterated into Korean. "
+    "Do NOT use any English (Latin) or foreign alphabets."
 )
 
-_ALLOWED_SCRIPTS = {'Hangul', 'Latin', 'Common', 'Inherited'}
+_ALLOWED_SCRIPTS = {'Hangul', 'Common', 'Inherited'}
 
 
 def _sanitize_language(text: str) -> str:
@@ -272,7 +272,7 @@ class ChatRecommendationsView(generics.RetrieveAPIView):
                 f"추천된 작품 5개 (제목, 분류, 부서): {top5_info}\n\n"
                 "박물관 큐레이터로서 아래 형식에 맞게 한국어로 작성해줘.\n"
                 "- 첫 문장: 사용자의 관심사가 왜 이 작품들과 어울리는지 자연스럽게 도입\n"
-                "- 중간 문장들: 5개 중 3개 작품을 골라, 각 작품이 관심사와 어떻게 연결되는지 흐름 있게 설명 (작품명은 영어 원문 그대로)\n"
+                "- 중간 문장들: 5개 중 3개 작품을 골라, 각 작품이 관심사와 어떻게 연결되는지 흐름 있게 설명 (작품명, 작가명 포함 모든 내용을 반드시 자연스러운 한국어로 번역 및 음차하여 단 한 글자의 외국어/영어도 없게 작성)\n"
                 "- 마지막 문장: 반드시 '유물에 관하여 더 궁금한 점이 있다면 언제든 물어봐주세요!'로 끝낼 것\n"
                 "전체 3~4문장, 자연스러운 말투로 작성해줘."
             )
@@ -465,7 +465,7 @@ class ChatNextRecommendationView(generics.RetrieveAPIView):
                 f"다음 유물: {chosen.title}, {chosen.type}, {chosen.department}\n"
                 f"연결 방식: {conn_type}\n\n"
                 f"위 두 유물의 연결을 한국어로 1~2문장으로 자연스럽게 설명해줘.\n"
-                f"유물명은 영어 그대로 써도 돼.\n"
+                f"유물명, 종류 등 모든 내용은 반드시 자연스러운 한국어로 완전하게 번역하거나 음차해서 단 한 글자의 외국어/영어도 없게 작성해줘.\n"
                 f"conn_type이 story면 흐름이 이어짐, mystery면 의외의 연결, "
                 f"contrast면 대비, shock면 발길을 멈추게 하는 작품으로 설명해줘.\n"
                 f"반드시 한국어로만 출력해줘. 한국어가 아닌 다른 언어(영어, 베트남어, 중국어 등)는 절대 사용하지 마."
@@ -573,7 +573,7 @@ class ChatReasonView(APIView):
             f"연결 방식: {conn_type}\n"
             f"유사도 상위 키워드: {', '.join(keywords)}\n\n"
             f"이 유물을 추천한 이유를 한국어로 2~3문장으로 설명해줘.\n"
-            f"유물명은 영어 그대로 써도 돼.\n"
+            f"유물명, 종류 등 모든 내용은 반드시 자연스러운 한국어로 완전하게 번역하거나 음차해서 단 한 글자의 외국어/영어도 없게 작성해줘.\n"
             f"반드시 한국어로만 출력해줘. 한국어가 아닌 다른 언어(영어, 베트남어, 중국어 등)는 절대 사용하지 마."
         )
         reason = _groq_generate(prompt) or CONN_MESSAGES[conn_type]
@@ -767,7 +767,7 @@ class ChatSummaryView(APIView):
         narrative_prompt = (
             f"관람한 유물 목록 (순서대로):\n{artifact_sequence}\n\n"
             f"이 관람 여정을 한국어로 1~2문장으로 서사적으로 요약해줘.\n"
-            f"유물명은 영어 그대로 써도 돼.\n"
+            f"유물명, 종류 등 모든 내용은 반드시 자연스러운 한국어로 완전하게 번역하거나 음차해서 단 한 글자의 외국어/영어도 없게 작성해줘.\n"
             f"반드시 한국어로만 출력해줘. 한국어가 아닌 다른 언어(영어, 베트남어, 중국어 등)는 절대 사용하지 마."
         )
         if len(keywords_seen) >= 2:
